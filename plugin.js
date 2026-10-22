@@ -1,27 +1,49 @@
 (function () {
     'use strict';
 
-    function init() {
-        if (!window.Lampa) {
-            console.error('Lampa не найдена');
-            return;
-        }
+    const NAME = 'Lampa Stream';
 
-        console.log('Lampa Stream: запуск');
-
-        Lampa.Noty.show(
-            'Lampa Stream успешно загружен!'
-        );
-
-        window.LampaStream = {
-            version: '0.1.0',
-            name: 'Lampa Stream'
-        };
+    if (!window.Lampa) {
+        console.error(NAME + ': Lampa не найдена');
+        return;
     }
 
-    if (window.Lampa) {
-        init();
+    if (window.LampaStream) {
+        return;
+    }
+
+    window.LampaStream = {
+        name: NAME,
+        version: '0.2.0'
+    };
+
+    function openStream(movie) {
+        console.log(NAME + ': выбран фильм', movie);
+
+        const title =
+            movie.title ||
+            movie.name ||
+            movie.original_title ||
+            movie.original_name ||
+            'Без названия';
+
+        Lampa.Noty.show(
+            NAME + ': ' + title
+        );
+    }
+
+    if (Lampa.Manifest && Lampa.Manifest.plugins) {
+        Lampa.Manifest.plugins = {
+            type: 'video',
+            name: NAME,
+            subtitle: 'Смотреть через Lampa Stream',
+            onContextMenu: true,
+            onContextLauch: openStream
+        };
+
+        console.log(NAME + ': видеоплагин зарегистрирован');
+        Lampa.Noty.show(NAME + ' 0.2.0 подключён!');
     } else {
-        console.error('Ожидается среда Lampa');
+        console.error(NAME + ': Manifest.plugins недоступен');
     }
 })();
