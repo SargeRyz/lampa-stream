@@ -2,51 +2,106 @@
     'use strict';
 
     const NAME = 'Lampa Stream';
+    const VERSION = '0.3.1';
 
+    // Проверяем доступность Lampa
     if (!window.Lampa || !Lampa.Listener) {
         console.error(NAME + ': API Lampa недоступен');
         return;
     }
 
-    if (window.LampaStream && window.LampaStream.version === '0.3.0') {
+    // Защита от повторной загрузки
+    if (window.LampaStream) {
+        console.log(NAME + ': плагин уже загружен');
         return;
     }
 
     window.LampaStream = {
         name: NAME,
-        version: '0.3.0'
+        version: VERSION
     };
 
-    Lampa.Listener.follow('full', function (event) {
-        if (event.type !== 'complete') return;
+    // Добавляем источник просмотра
+    function addStreamButton(event) {
+        if (!event || event.type !== 'complete') {
+            return;
+        }
 
-        const screen = event.object &&
-            event.object.activity &&
-            event.object.activity.render();
+        const activity =
+            event.object && event.object.activity;
 
-        if (!screen || !screen.length) return;
+        if (
+            !activity ||
+            typeof activity.render !== 'function'
+        ) {
+            console.log(
+                NAME + ': экран фильма недоступен'
+            );
+            return;
+        }
 
-        const container = screen.find('.buttons--container');
+        // Приводим результат render() к jQuery
+        const screen = $(activity.render());
 
-        if (!container.length) return;
-        if (container.find('.lampa-stream-button').length) return;
+        // Находим контейнер кнопок просмотра
+        const container = screen
+            .find('.buttons--container')
+            .addBack('.buttons--container');
 
+        if (!container.length) {
+            console.log(
+                NAME + ': контейнер кнопок не найден'
+            );
+            return;
+        }
+
+        // Не допускаем дублирования кнопки
+        if (
+            container.find('.lampa-stream-button').length
+        ) {
+            return;
+        }
+
+        // Создаём кнопку источника
         const button = $(
             '<div class="full-start__button selector lampa-stream-button">' +
                 '<span>Lampa Stream</span>' +
             '</div>'
         );
 
-        button.attr('data-subtitle', 'Смотреть через Lampa Stream');
+        button.attr(
+            'data-subtitle',
+            'Смотреть через Lampa Stream'
+        );
 
+        // Обработчик выбора источника
         button.on('hover:enter', function () {
-            Lampa.Noty.show('Lampa Stream: источник выбран');
+            console.log(
+                NAME + ': источник выбран'
+            );
+
+            Lampa.Noty.show(
+                'Lampa Stream: источник выбран'
+            );
         });
 
+        // Добавляем кнопку в контейнер
         container.append(button);
 
-        console.log(NAME + ': кнопка добавлена');
-    });
+        console.log(
+            NAME + ': кнопка источника добавлена'
+        );
+    }
 
-    Lampa.Noty.show(NAME + ' 0.3.0 подключён!');
+    // Подписываемся на открытие карточки фильма
+    Lampa.Listener.follow('full', addStreamButton);
+
+    console.log(
+        NAME + ' ' + VERSION + ' запущен'
+    );
+
+    Lampa.Noty.show(
+        NAME + ' ' + VERSION + ' подключён!'
+    );
+
 })();
