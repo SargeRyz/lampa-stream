@@ -3,47 +3,50 @@
 
     const NAME = 'Lampa Stream';
 
-    if (!window.Lampa) {
-        console.error(NAME + ': Lampa не найдена');
+    if (!window.Lampa || !Lampa.Listener) {
+        console.error(NAME + ': API Lampa недоступен');
         return;
     }
 
-    if (window.LampaStream) {
+    if (window.LampaStream && window.LampaStream.version === '0.3.0') {
         return;
     }
 
     window.LampaStream = {
         name: NAME,
-        version: '0.2.0'
+        version: '0.3.0'
     };
 
-    function openStream(movie) {
-        console.log(NAME + ': выбран фильм', movie);
+    Lampa.Listener.follow('full', function (event) {
+        if (event.type !== 'complete') return;
 
-        const title =
-            movie.title ||
-            movie.name ||
-            movie.original_title ||
-            movie.original_name ||
-            'Без названия';
+        const screen = event.object &&
+            event.object.activity &&
+            event.object.activity.render();
 
-        Lampa.Noty.show(
-            NAME + ': ' + title
+        if (!screen || !screen.length) return;
+
+        const container = screen.find('.buttons--container');
+
+        if (!container.length) return;
+        if (container.find('.lampa-stream-button').length) return;
+
+        const button = $(
+            '<div class="full-start__button selector lampa-stream-button">' +
+                '<span>Lampa Stream</span>' +
+            '</div>'
         );
-    }
 
-    if (Lampa.Manifest && Lampa.Manifest.plugins) {
-        Lampa.Manifest.plugins = {
-            type: 'video',
-            name: NAME,
-            subtitle: 'Смотреть через Lampa Stream',
-            onContextMenu: true,
-            onContextLauch: openStream
-        };
+        button.attr('data-subtitle', 'Смотреть через Lampa Stream');
 
-        console.log(NAME + ': видеоплагин зарегистрирован');
-        Lampa.Noty.show(NAME + ' 0.2.0 подключён!');
-    } else {
-        console.error(NAME + ': Manifest.plugins недоступен');
-    }
+        button.on('hover:enter', function () {
+            Lampa.Noty.show('Lampa Stream: источник выбран');
+        });
+
+        container.append(button);
+
+        console.log(NAME + ': кнопка добавлена');
+    });
+
+    Lampa.Noty.show(NAME + ' 0.3.0 подключён!');
 })();
