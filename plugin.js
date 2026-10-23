@@ -188,8 +188,23 @@
         if (!title) { failed('В карточке нет названия для поиска Rutube.'); return; }
         var page = /^\d+$/.test(params.page || '') ? Number(params.page) : 1;
         if (page < 1 || page > 25) { failed('Некорректная страница поиска Rutube.'); return; }
-        var names = [normal(params.title), normal(params.original_title)].filter(Boolean);
-        var searchQuery = {query: title, content_type: 'video', duration: 'movie'};
+        var releaseYear = /^\d{4}$/.test(params.year || '') ? Number(params.year) : 0;
+        if (releaseYear < 1888 || releaseYear > new Date().getFullYear() + 2) { failed('Для точного поиска Rutube в карточке нужен год выпуска.'); return; }
+        var names = [normal(params.title), normal(params.original_title)].filter(function (name, i, all) { return name && all.indexOf(name) === i; });
+        function exactTitle(value) {
+            return String(value || '').split(/\s(?:\/|\||—|–|-)\s|[([]/).some(function (part) {
+                part = part.replace(/\s+(?:19|20)\d{2}(?:\D.*)?$/, '');
+                return names.indexOf(normal(part)) >= 0 || names.indexOf(normal(part.replace(/^(?:художественный\s+фильм|фильм|кино|смотреть)(?:\s*[:—-]\s*|\s+)/i, ''))) >= 0;
+            });
+        }
+        function videoYear(value) {
+            var metadata = ' ' + normal(value) + ' ';
+            names.forEach(function (name) { metadata = metadata.replace(' ' + name + ' ', ' '); });
+            var years = metadata.match(/\b(?:19|20)\d{2}\b/g) || [];
+            years.sort(function (a, b) { return Math.abs(Number(a) - releaseYear) - Math.abs(Number(b) - releaseYear); });
+            return years.length && Math.abs(Number(years[0]) - releaseYear) <= 1 ? Number(years[0]) : 0;
+        }
+        var searchQuery = {query: title + ' ' + releaseYear, content_type: 'video', duration: 'movie'};
         if (page > 1) searchQuery.page = page;
         api('/api/search/video/', searchQuery, function (data) {
             if (!Array.isArray(data.results)) { failed('Rutube: нет results[]. Поля ответа: ' + Object.keys(data).slice(0, 8).join(', ')); return; }
@@ -197,11 +212,12 @@
             var rows = data.results.filter(function (video) {
                 if (!video || !/^[a-f0-9]{32}$/i.test(String(video.id)) || seen[video.id] || restricted(video) || !isFinite(Number(video.duration)) || Number(video.duration) < 1200) return false;
                 seen[video.id] = true;
+                if (Number(video.category && typeof video.category === 'object' ? video.category.id : video.category) !== 4 || !exactTitle(video.title) || !videoYear(video.title)) return false;
                 var name = normal(video.title);
-                return names.some(function (expected) { return name.indexOf(expected) >= 0; }) && !/(^|\s)(трейлер|trailer|обзор|реакция)(\s|$)/.test(name);
-            }).slice(0, 100).map(function (video) {
+                return !/(^|\s)(трейлер|trailer|обзор|реакция)(\s|$)/.test(name);
+            }).sort(function (a, b) { return Math.abs(videoYear(a.title) - releaseYear) - Math.abs(videoYear(b.title) - releaseYear); }).slice(0, 100).map(function (video) {
                 return {id: video.id, translate: video.title, method: 'call', url: link({video: video.id}),
-                    duration: duration(video.duration), img: video.thumbnail_url,
+                    year: videoYear(video.title), duration: duration(video.duration), img: video.thumbnail_url,
                     details: video.author && video.author.name ? 'Канал: ' + video.author.name : 'Rutube'};
             });
             var nextPage = 0;
@@ -212,7 +228,7 @@
                 } catch (error) { /* Ignore invalid pagination links. */ }
             } else if (data.has_next === true) nextPage = page + 1;
             if (nextPage > page && nextPage <= 25) rows.push({name: 'Следующая страница', method: 'link',
-                url: link({title: title, original_title: params.original_title || '', serial: params.serial || 0, page: nextPage})});
+                url: link({title: title, original_title: params.original_title || '', year: releaseYear, serial: params.serial || 0, page: nextPage})});
             done({type: 'movie', data: rows});
         });
     }
@@ -383,12 +399,14 @@
                 return {title: 'Сезон ' + escapeText(s), season: s, selected: season === s};
             })).concat(voices.map(function (voice) { return {title: 'Озвучка: ' + escapeText(voice.name || 'Перевод'), online_url: voice.url, selected: voice.active}; })));
             filter.chosen('filter', season ? ['Сезон ' + escapeText(season)] : []);
-            if (currentBackend && currentBackend.kind === 'rutube') scroll.append($('<div class="mycinema-message"></div>').text('Результаты поиска Rutube: проверьте название, год и продолжительность перед просмотром. Качество потока выбирается плеером автоматически.'));
+            if (currentBackend && currentBackend.kind === 'rutube') scroll.append($('<div class="mycinema-message"></div>').text('Фильмы Rutube: название совпадает, год отличается не более чем на один. Проверьте год и продолжительность перед просмотром. Качество — Авто.'));
             if (discoveryErrors.length) scroll.append($('<div class="mycinema-message"></div>').text('Недоступные подключения: ' + discoveryErrors.join(' • ') + '. Нажмите «Обновить» для повторной проверки.'));
             if (sourceID === 'demo') scroll.append($('<div class="mycinema-message"></div>').text('Демонстрация плеера: Big Buck Bunny. Это тестовое видео, а не фильм из открытой карточки.'));
             if (onlineStack.length) scroll.append($('<div class="simple-button selector">Назад к выбору</div>').on('hover:enter', back));
             var visible = items.filter(function (item) { return !season || String(item.season) === season; });
-            if (!visible.length) scroll.append($('<div class="mycinema-message"></div>').text('Для этой карточки видео не найдено. Выберите другой источник или добавьте фильм в каталог сервера.'));
+            if (currentBackend && currentBackend.kind === 'rutube' && !visible.some(function (item) { return !item.browse; })) {
+                scroll.append($('<div class="mycinema-message"></div>').text('В этой выдаче Rutube фильм с подходящими названием и годом не найден. Можно проверить следующую страницу или другой источник.'));
+            } else if (!visible.length) scroll.append($('<div class="mycinema-message"></div>').text('Для этой карточки видео не найдено. Выберите другой источник или добавьте фильм в каталог сервера.'));
             visible.forEach(function (item) {
                 var row = $('<div class="mycinema-row selector"><div class="mycinema-thumb">▶</div><div class="mycinema-body"><div class="mycinema-title"></div><div class="mycinema-info"></div><div class="mycinema-progress"></div></div><div class="mycinema-duration"></div></div>');
                 var labels = [item.voice, item.info];
@@ -574,7 +592,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.6.1', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.6.2', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
