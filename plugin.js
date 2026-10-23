@@ -14,6 +14,7 @@
     // Reserved internal origin. These navigation URLs never reach the network.
     var DEVICE_ORIGIN = 'https://mycinema.invalid';
     function backend(kind) {
+        if (kind === 'rutube') return {kind: kind, base: DEVICE_ORIGIN, token: ''};
         if (kind === 'device') return {kind: kind, base: DEVICE_ORIGIN, token: '',
             host: String(Lampa.Storage.field('mycinema_filmix_host') || '').trim().replace(/\/+$/, ''),
             account: String(Lampa.Storage.field('mycinema_filmix_token') || '')};
@@ -131,6 +132,80 @@
             })});
         });
     }
+    function deviceRutube(params, network, done, failed) {
+        var origin = 'https://rutube.ru';
+        function api(path, query, callback) {
+            var url = new URL(path, origin);
+            Object.keys(query || {}).forEach(function (key) { url.searchParams.set(key, query[key]); });
+            network.timeout(15000);
+            network.native(url.href, function (data) {
+                try {
+                    if (typeof data === 'string') data = JSON.parse(data);
+                    if (!data || typeof data !== 'object' || data.error || data.errors) { failed('Rutube вернул ошибку или ограничил доступ к видео.'); return; }
+                    callback(data);
+                } catch (error) { failed('Неподдерживаемый ответ Rutube.'); }
+            }, function (error) {
+                failed(error && error.status ? 'Rutube: HTTP ' + error.status + '. Попробуйте другое видео или источник.' :
+                    'Нет прямого доступа к Rutube из Lampa. Возможны CORS, ограничения сети или ошибка API. Успешный запрос из терминала не проверяет ограничения приложения.');
+            }, false, {dataType: 'json'});
+        }
+        function link(query) {
+            var url = new URL('/rutube', DEVICE_ORIGIN);
+            Object.keys(query).forEach(function (key) { url.searchParams.set(key, query[key]); });
+            return url.href;
+        }
+        function restricted(video) {
+            return ['is_hidden', 'is_deleted', 'is_locked', 'is_paid', 'is_adult', 'is_audio', 'is_livestream'].some(function (key) { return video[key] === true; });
+        }
+        function normal(value) {
+            return String(value || '').toLowerCase().replace(/ё/g, 'е').replace(/[\s\-–—.,:;!?"'«»()[\]{}\/\\_]+/g, ' ').trim();
+        }
+        function duration(value) {
+            var seconds = Math.floor(Number(value)), hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds % 3600 / 60);
+            return (hours ? hours + ':' + ('0' + minutes).slice(-2) : String(minutes)) + ':' + ('0' + seconds % 60).slice(-2);
+        }
+        if (params.video) {
+            if (!/^[a-f0-9]{32}$/i.test(params.video)) { failed('Некорректный ID видео Rutube.'); return; }
+            api('/api/play/options/' + params.video + '/', {format: 'json', no_404: 'true', pver: 'v2', client: 'wdp'}, function (data) {
+                if (restricted(data) || data.can_play === false || data.has_video === false) { failed('Это видео Rutube недоступно для прямого воспроизведения.'); return; }
+                var stream = data.video_balancer && data.video_balancer.m3u8;
+                if (typeof stream !== 'string' || !/^https:\/\//i.test(stream) || !httpURL(stream)) {
+                    failed('Rutube не вернул прямой HTTPS HLS-поток. Выберите другое видео.'); return;
+                }
+                done({url: stream, quality: {'Авто': stream}});
+            }); return;
+        }
+        if (String(params.serial) === '1') { failed('Прямой поиск Rutube пока поддерживает только фильмы.'); return; }
+        var title = params.title || params.original_title;
+        if (!title) { failed('В карточке нет названия для поиска Rutube.'); return; }
+        var page = /^\d+$/.test(params.page || '') ? Number(params.page) : 1;
+        if (page < 1 || page > 25) { failed('Некорректная страница поиска Rutube.'); return; }
+        var names = [normal(params.title), normal(params.original_title)].filter(Boolean);
+        api('/api/search/video/', {query: title, content_type: 'video', duration: 'movie', page: page, format: 'json'}, function (data) {
+            if (!Array.isArray(data.results)) { failed('Rutube не вернул список результатов поиска.'); return; }
+            var seen = Object.create(null);
+            var rows = data.results.filter(function (video) {
+                if (!video || !/^[a-f0-9]{32}$/i.test(String(video.id)) || seen[video.id] || restricted(video) || !isFinite(Number(video.duration)) || Number(video.duration) < 1200) return false;
+                seen[video.id] = true;
+                var name = normal(video.title);
+                return names.some(function (expected) { return name.indexOf(expected) >= 0; }) && !/(^|\s)(трейлер|trailer|обзор|реакция)(\s|$)/.test(name);
+            }).slice(0, 100).map(function (video) {
+                return {id: video.id, translate: video.title, method: 'call', url: link({video: video.id}),
+                    duration: duration(video.duration), img: video.thumbnail_url,
+                    details: video.author && video.author.name ? 'Канал: ' + video.author.name : 'Rutube'};
+            });
+            var nextPage = 0;
+            if (typeof data.next === 'string') {
+                try {
+                    var next = new URL(data.next, origin);
+                    if (next.origin === origin && next.pathname === '/api/search/video/' && /^\d+$/.test(next.searchParams.get('page') || '')) nextPage = Number(next.searchParams.get('page'));
+                } catch (error) { /* Ignore invalid pagination links. */ }
+            } else if (data.has_next === true) nextPage = page + 1;
+            if (nextPage > page && nextPage <= 25) rows.push({name: 'Следующая страница', method: 'link',
+                url: link({title: title, original_title: params.original_title || '', serial: params.serial || 0, page: nextPage})});
+            done({type: 'movie', data: rows});
+        });
+    }
     function directURL(value, base) {
         if (typeof value !== 'string' || !value) return '';
         try { var url = new URL(value.split(' or ')[0], base); return httpURL(url.href) ? url.href : ''; } catch (error) { return ''; }
@@ -148,7 +223,7 @@
             subtitles: (Array.isArray(raw.subtitles) ? raw.subtitles : []).map(function (sub) {
                 return {label: sub.label || sub.name || '', url: directURL(sub.url, base)};
             }), headers: raw.headers, season: raw.s, episode: raw.e, poster: directURL(raw.img, base),
-            browse: method === 'link', hls_manifest_timeout: raw.hls_manifest_timeout};
+            duration: raw.duration, browse: method === 'link', hls_manifest_timeout: raw.hls_manifest_timeout};
     }
     function mediaType(movie) { return movie.media_type === 'tv' || movie.first_air_date || movie.name ? 'tv' : 'movie'; }
     function namespace(movie) { return movie.source || 'tmdb'; }
@@ -199,18 +274,21 @@
             }, false, {dataType: 'json'});
         }
         function readOnline(url, done, failed, jsonMode, connection) {
+            var discovery = !!connection;
             connection = connection || currentBackend;
             try {
                 url = onlineURL(url, null, connection);
                 if (jsonMode) { var parsed = new URL(url); parsed.searchParams.set('rjson', 'true'); url = parsed.href; }
             } catch (error) { failed(error.message); return; }
-            if (connection.kind === 'device') {
+            if (connection.kind === 'device' || connection.kind === 'rutube') {
                 var internal = new URL(url), params = {};
-                if (internal.origin !== DEVICE_ORIGIN || internal.pathname !== '/filmix') { failed('Некорректный переход клиентского адаптера.'); return; }
+                var route = connection.kind === 'rutube' ? '/rutube' : '/filmix';
+                if (internal.origin !== DEVICE_ORIGIN || internal.pathname !== route) { failed('Некорректный переход клиентского адаптера.'); return; }
                 internal.searchParams.forEach(function (value, key) { params[key] = value; });
+                if (connection.kind === 'rutube') { deviceRutube(params, network, function (data) { done(data, url); }, failed); return; }
                 deviceFilmix(params, connection, network, function (data) { done(data, url); }, failed); return;
             }
-            network.timeout(connection ? 8000 : 30000);
+            network.timeout(discovery ? 8000 : 30000);
             network.native(url, function (data) {
                 if (typeof data === 'string') { try { data = JSON.parse(data); } catch (error) { failed('Lampac вернул страницу вместо JSON. Проверьте адрес и доступ к API.'); return; } }
                 if (!data || typeof data !== 'object') { failed('Пустой ответ источника.'); return; }
@@ -286,6 +364,7 @@
                 return {title: 'Сезон ' + escapeText(s), season: s, selected: season === s};
             })).concat(voices.map(function (voice) { return {title: 'Озвучка: ' + escapeText(voice.name || 'Перевод'), online_url: voice.url, selected: voice.active}; })));
             filter.chosen('filter', season ? ['Сезон ' + escapeText(season)] : []);
+            if (currentBackend && currentBackend.kind === 'rutube') scroll.append($('<div class="mycinema-message"></div>').text('Результаты поиска Rutube: проверьте название, год и продолжительность перед просмотром. Качество потока выбирается плеером автоматически.'));
             if (discoveryErrors.length) scroll.append($('<div class="mycinema-message"></div>').text('Недоступные подключения: ' + discoveryErrors.join(' • ') + '. Нажмите «Обновить» для повторной проверки.'));
             if (sourceID === 'demo') scroll.append($('<div class="mycinema-message"></div>').text('Демонстрация плеера: Big Buck Bunny. Это тестовое видео, а не фильм из открытой карточки.'));
             if (onlineStack.length) scroll.append($('<div class="simple-button selector">Назад к выбору</div>').on('hover:enter', back));
@@ -350,21 +429,29 @@
                 message(error + ' Для проверки плеера выберите «Демо» в меню «Источник».', discover);
             }
             var tasks = [], available = [];
-            if (mode === 'all') {
+            if (mode === 'all' || mode === 'device') {
                 if (backend('device').host) tasks.push('device');
-                if (httpURL(backend('direct').base)) tasks.push('direct', 'catalog');
-                if (httpURL(backend('lampac').base)) tasks.push('lampac');
-                if (Lampa.Storage.field('mycinema_public') === 'yes') tasks.push('public');
+                if (Lampa.Storage.field('mycinema_rutube') !== 'no' && mediaType(movie) !== 'tv') tasks.push('rutube');
+                if (mode === 'all') {
+                    if (httpURL(backend('direct').base)) tasks.push('direct', 'catalog');
+                    if (httpURL(backend('lampac').base)) tasks.push('lampac');
+                    if (Lampa.Storage.field('mycinema_public') === 'yes') tasks.push('public');
+                }
             } else tasks.push(mode);
             function next() {
                 if (!alive || ticket !== generation) return;
                 if (!tasks.length) {
-                    if (!available.length) { failed(discoveryErrors.join(' • ') || 'Нет настроенных источников. Укажите API Filmix для прямого доступа с устройства или подключите личный сервер в настройках.'); return; }
+                    if (!available.length) { failed(discoveryErrors.join(' • ') || 'Нет настроенных источников для этой карточки. Включите Rutube для фильмов или подключите другой источник в настройках.'); return; }
                     found({sources: available}); return;
                 }
                 var kind = tasks.shift(), connection = backend(kind);
                 var label = {device: 'На устройстве', direct: 'Свой адаптер', lampac: 'Свой Lampac', public: 'WTCH', catalog: 'Каталог'}[kind] || kind;
                 function error(text) { if (!alive || ticket !== generation) return; discoveryErrors.push(label + ': ' + text); next(); }
+                if (kind === 'rutube') {
+                    available.push({id: 'device-rutube', name: 'Rutube • На устройстве', connection: connection,
+                        url: onlineURL(DEVICE_ORIGIN + '/rutube', onlineParams(movie), connection)});
+                    next(); return;
+                }
                 if (kind === 'device') {
                     available.push({id: 'device-filmix', name: 'Filmix (до 480p) • На устройстве', connection: connection,
                         url: onlineURL(DEVICE_ORIGIN + '/filmix', onlineParams(movie), connection)});
@@ -453,8 +540,10 @@
         Lampa.SettingsApi.addComponent({component: ID, name: NAME, icon: ICON});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_server', type: 'input', default: ''},
             field: {name: 'Адрес личного API', description: 'Необязательный сервер пользователя для адаптеров и каталога. Например https://cinema.example.org.'}});
-        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_mode', type: 'select', values: {all: 'Все подключения', device: 'Напрямую с устройства', direct: 'Адаптеры личного API', public: 'Готовый сервер WTCH', lampac: 'Свой Lampac', catalog: 'Свой каталог'}, default: 'all'},
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_mode', type: 'select', values: {all: 'Все подключения', device: 'Напрямую с устройства', rutube: 'Rutube на устройстве', direct: 'Адаптеры личного API', public: 'Готовый сервер WTCH', lampac: 'Свой Lampac', catalog: 'Свой каталог'}, default: 'all'},
             field: {name: 'Режим', description: 'После смены режима откройте источник заново.'}});
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_rutube', type: 'select', values: {yes: 'Да', no: 'Нет'}, default: 'yes'},
+            field: {name: 'Rutube: прямой поиск', description: 'Для фильмов. Поиск и получение потока выполняются на устройстве, без общего сервера и токена.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_filmix_host', type: 'input', default: ''},
             field: {name: 'Filmix: HTTPS API', description: 'Экспериментальный прямой доступ с устройства, без общего сервера. Укажите доступный API host Filmix.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_filmix_token', type: 'input', default: ''},
@@ -467,7 +556,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.5.0', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.6.0', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
