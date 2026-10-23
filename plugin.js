@@ -84,7 +84,7 @@
         }
         var postid = params.postid;
         if (!postid) {
-            var title = params.original_title || params.title;
+            var title = params.clarification === '1' ? params.title : params.original_title || params.title;
             if (!title) { failed('В карточке нет названия для поиска.'); return; }
             api('search', {story: title}, function (rows) {
                 if (!Array.isArray(rows)) { failed('Неподдерживаемый ответ поиска Filmix.'); return; }
@@ -204,7 +204,7 @@
             years.sort(function (a, b) { return Math.abs(Number(a) - releaseYear) - Math.abs(Number(b) - releaseYear); });
             return years.length && Math.abs(Number(years[0]) - releaseYear) <= 1 ? Number(years[0]) : 0;
         }
-        var searchQuery = {query: title + ' ' + releaseYear, content_type: 'video', duration: 'movie'};
+        var searchQuery = {query: params.query || title + ' ' + releaseYear, content_type: 'video', duration: 'movie'};
         if (page > 1) searchQuery.page = page;
         api('/api/search/video/', searchQuery, function (data) {
             if (!Array.isArray(data.results)) { failed('Rutube: нет results[]. Поля ответа: ' + Object.keys(data).slice(0, 8).join(', ')); return; }
@@ -228,7 +228,7 @@
                 } catch (error) { /* Ignore invalid pagination links. */ }
             } else if (data.has_next === true) nextPage = page + 1;
             if (nextPage > page && nextPage <= 25) rows.push({name: 'Следующая страница', method: 'link',
-                url: link({title: title, original_title: params.original_title || '', year: releaseYear, serial: params.serial || 0, page: nextPage})});
+                url: link({title: title, original_title: params.original_title || '', year: releaseYear, serial: params.serial || 0, page: nextPage, query: params.query || ''})});
             done({type: 'movie', data: rows});
         });
     }
@@ -242,13 +242,15 @@
         Object.keys(raw.quality || {}).forEach(function (key) {
             var value = directURL(raw.quality[key], base); if (value) quality[key] = value;
         });
-        return {id: String(raw.id || raw.url || raw.title || raw.name || ''), method: method,
-            title: raw.translate || raw.name || raw.title || 'Видео', voice: raw.voice_name || '',
+        return {id: String(raw.id || raw.url || raw.title || raw.name || ''), method: method, kind: type,
+            title: type === 'episode' ? raw.name || raw.title || raw.translate || 'Серия ' + raw.e : raw.translate || raw.name || raw.title || 'Видео',
+            voice: raw.voice_name || raw.translate || '',
             info: [raw.year, raw.details, raw.maxquality].filter(Boolean).join(' • '),
             url: directURL(raw.url, base), quality: quality,
             subtitles: (Array.isArray(raw.subtitles) ? raw.subtitles : []).map(function (sub) {
                 return {label: sub.label || sub.name || '', url: directURL(sub.url, base)};
             }), headers: raw.headers, season: raw.s, episode: raw.e, poster: directURL(raw.img, base),
+            date: raw.air_date || '', rating: raw.vote_average, qualityLabel: raw.maxquality || '',
             duration: raw.duration, browse: method === 'link', hls_manifest_timeout: raw.hls_manifest_timeout};
     }
     function mediaType(movie) { return movie.media_type === 'tv' || movie.first_air_date || movie.name ? 'tv' : 'movie'; }
@@ -264,16 +266,77 @@
 
     function Screen(object) {
         var self = this, movie = object.movie;
+        if (!movie.title && movie.name) movie.title = movie.name;
+        if (!movie.original_title && movie.original_name) movie.original_title = movie.original_name;
         var files = new Lampa.Explorer(object);
         var scroll = new Lampa.Scroll({mask: true, over: true});
-        var filter = new Lampa.Filter(object);
+        var searchParams = Object.assign({}, object, {search: object.search || movie.title || movie.name || '',
+            search_one: movie.title || movie.name || '', search_two: movie.original_title || movie.original_name || ''});
+        var filter = new Lampa.Filter(searchParams);
         var network = new Lampa.Reguest();
+        var metadataNetwork = new Lampa.Reguest();
         var sources = [], sourceID = '', items = [], season = '', last = null;
         var ready = false, alive = true, generation = 0;
         var mode = Lampa.Storage.field('mycinema_mode') || 'all';
         var sourceStorageKey = 'mycinema_source_' + mode;
         var currentBackend = null, catalogSourceID = '', discoveryErrors = [];
         var currentOnlineURL = '', onlineStack = [], voices = [], resolving = false;
+        var seasonChoices = [], selectedSeason = '', queryOverride = object.clarification ? object.search || '' : '';
+        var metadata = {}, metadataPending = {}, globalSearch = false, historyRow = null, autoSeasonOpened = false;
+
+        function searchURL(url, connection) {
+            if (!queryOverride) return url;
+            var parsed = new URL(url);
+            if (connection.kind === 'rutube') parsed.searchParams.set('query', queryOverride);
+            else { parsed.searchParams.set('title', queryOverride); parsed.searchParams.set('clarification', '1'); }
+            if (globalSearch) parsed.searchParams.set('similar', 'true');
+            return parsed.href;
+        }
+        function activeVoice() {
+            var active = voices.filter(function (voice) { return voice.active; })[0];
+            return active ? active.name || '' : '';
+        }
+        function seasonNumber(item) {
+            var match = String(item.title || '').match(/\d+/);
+            return item.season != null ? String(item.season) : match ? String(Number(match[0])) : '';
+        }
+        function durationText(value) {
+            if (typeof value !== 'number') return value || '';
+            if (!isFinite(value) || value <= 0) return '';
+            return Math.floor(value / 60) + ':' + ('0' + Math.floor(value % 60)).slice(-2);
+        }
+        function dateText(value) {
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return value || '';
+            try { return Lampa.Utils.parseTime(value).full; } catch (error) { return value; }
+        }
+        function enrichEpisodes() {
+            var numbers = [];
+            items.forEach(function (item) {
+                if (!item.browse && item.episode != null && item.season != null && numbers.indexOf(String(item.season)) < 0) numbers.push(String(item.season));
+            });
+            if (mediaType(movie) !== 'tv' || ['tmdb', 'cub'].indexOf(namespace(movie)) < 0 || !/^\d+$/.test(String(movie.id))) return;
+            numbers.forEach(function (number) {
+                if (!/^\d+$/.test(number) || metadata[number] || metadataPending[number] || !Lampa.TMDB || typeof Lampa.TMDB.api !== 'function' || typeof Lampa.TMDB.key !== 'function') return;
+                metadataPending[number] = true;
+                var language = String(Lampa.Storage.field('language') || 'ru');
+                var url = Lampa.TMDB.api('tv/' + movie.id + '/season/' + number + '?api_key=' + encodeURIComponent(Lampa.TMDB.key()) + '&language=' + encodeURIComponent(language));
+                metadataNetwork.timeout(10000);
+                metadataNetwork.native(url, function (data) {
+                    if (!alive || !data || !Array.isArray(data.episodes)) return;
+                    metadata[number] = data.episodes;
+                    updateMetadata();
+                }, function () { /* Optional artwork must not block playback. */ }, false, {dataType: 'json'});
+            });
+        }
+        function episodeMetadata(item) {
+            return (metadata[String(item.season)] || []).filter(function (episode) { return Number(episode.episode_number) === Number(item.episode); })[0] || {};
+        }
+        function updateMetadata() {
+            scroll.render().find('.mycinema-row').each(function () {
+                var row = $(this), item = row.data('mycinema-item');
+                if (item) decorateRow(row, item);
+            });
+        }
 
         function isActive() {
             var active = Lampa.Activity.active();
@@ -326,7 +389,8 @@
         }
         function loadOnline(url, push) {
             var ticket = ++generation;
-            resolving = false; network.clear(); items = []; voices = []; season = '';
+            if (push) voices = [];
+            resolving = false; network.clear(); items = []; season = '';
             if (push && currentOnlineURL) onlineStack.push(currentOnlineURL);
             currentOnlineURL = url;
             message('Загружаем видео из источника…');
@@ -336,13 +400,28 @@
                 if (['movie', 'episode', 'season', 'similar'].indexOf(data.type) < 0 || !Array.isArray(data.data)) {
                     message('Формат ответа не поддерживается. Нужен Lampac с JSON API rjson=true.', function () { loadOnline(url, false); }); return;
                 }
-                voices = (Array.isArray(data.voice) ? data.voice : []).filter(function (voice) { return voice && voice.url; });
+                if (Array.isArray(data.voice)) voices = data.voice.filter(function (voice) { return voice && voice.url; });
+                else if (data.type !== 'episode' && data.type !== 'movie') voices = [];
                 items = data.data.filter(function (raw) { return raw && typeof raw === 'object'; }).map(function (raw) { return onlineItem(raw, data.type, resolvedURL); });
+                if (data.type === 'season') {
+                    seasonChoices = items.map(function (item) { return {title: item.title, season: seasonNumber(item), online_url: item.url}; });
+                    if (mediaType(movie) === 'tv' && seasonChoices.length && !autoSeasonOpened) {
+                        autoSeasonOpened = true;
+                        var first = seasonChoices.filter(function (choice) { return choice.season === selectedSeason; })[0] || seasonChoices[0];
+                        selectedSeason = first.season;
+                        loadOnline(first.online_url, true); return;
+                    }
+                }
+                if (data.type === 'episode' && items.length && items[0].season != null) selectedSeason = String(items[0].season);
                 draw();
+                enrichEpisodes();
             }, function (error) { if (alive && ticket === generation) message(error, function () { loadOnline(url, false); }); }, true);
         }
         function enter(item) {
-            if (item.browse) { loadOnline(item.url, true); return; }
+            if (item.browse) {
+                if (item.kind === 'similar') { seasonChoices = []; selectedSeason = ''; autoSeasonOpened = false; }
+                loadOnline(item.url, true); return;
+            }
             if (item.method !== 'call') { chooseQuality(item); return; }
             if (resolving) return;
             resolving = true;
@@ -387,39 +466,85 @@
             Lampa.Player.play(data);
             Lampa.Player.playlist([data]);
         }
+        function decorateRow(row, item) {
+            var episode = episodeMetadata(item), voice = item.voice || activeVoice();
+            var title = item.title || voice || 'Видео';
+            if (episode.name && (!item.title || /^(?:Серия|Episode)\s*\d+$/i.test(item.title))) title = episode.name;
+            var rating = Number(item.rating || episode.vote_average), date = item.date || episode.air_date;
+            var labels = [];
+            if (rating > 0 && rating <= 10) labels.push('★ ' + rating.toFixed(1));
+            if (date) labels.push(dateText(date));
+            if (voice && voice !== title) labels.push(voice);
+            if (item.info) labels.push(item.info);
+            if (item.episode != null && !labels.length) labels.push('Сезон ' + item.season + ' • Серия ' + item.episode);
+            row.find('.mycinema-title').text(title);
+            row.find('.mycinema-info').text(labels.join(' • '));
+            row.find('.mycinema-duration').text(durationText(item.duration || (episode.runtime ? episode.runtime * 60 : 0)));
+            var quality = item.qualityLabel || Object.keys(item.quality || {}).join(' / ');
+            if (!quality && currentBackend && currentBackend.kind === 'rutube' && !item.browse) quality = 'Авто';
+            row.find('.mycinema-quality').text(quality);
+            var poster = item.poster;
+            if (!poster && episode.still_path && Lampa.TMDB && typeof Lampa.TMDB.image === 'function') poster = Lampa.TMDB.image('t/p/w300' + episode.still_path);
+            var thumb = row.find('.mycinema-thumb');
+            if (httpURL(poster) && thumb.attr('data-image') !== poster) {
+                thumb.attr('data-image', poster).find('img').remove();
+                thumb.prepend($('<img alt="" loading="lazy" />').attr('src', poster).on('error', function () { $(this).remove(); }));
+            }
+            if (!item.demo && !item.browse && Lampa.Timeline && typeof Lampa.Timeline.render === 'function') {
+                var timeline = timelineFor(item);
+                if (timeline) row.find('.mycinema-progress').empty().append(Lampa.Timeline.render(timeline));
+            }
+        }
+        function updateHistory() {
+            if (!historyRow) return;
+            var viewed = items.filter(function (item) { return !item.demo && !item.browse; }).map(function (item) {
+                return {item: item, timeline: timelineFor(item)};
+            }).filter(function (entry) { return entry.timeline && (Number(entry.timeline.time) > 0 || Number(entry.timeline.percent) > 0); });
+            viewed.sort(function (a, b) { return (b.timeline.updated || 0) - (a.timeline.updated || 0); });
+            var resume = viewed[0];
+            historyRow.find('.mycinema-history-text').text(resume ? 'Продолжить: ' + (episodeMetadata(resume.item).name || resume.item.title || 'Видео') : 'Нет истории просмотра');
+            historyRow.toggleClass('selector', !!resume).toggleClass('mycinema-history--empty', !resume).off('hover:enter');
+            historyRow.find('.mycinema-history-time').text(resume && resume.timeline.time ? durationText(Number(resume.timeline.time)) : '');
+            if (resume) historyRow.on('hover:enter', function () { enter(resume.item); });
+        }
         function draw() {
             scroll.clear(); scroll.reset(); last = null;
             filter.render().find('.filter--sort span').text('Источник');
+            filter.render().find('.filter--search').toggleClass('hide', !currentBackend);
             filter.chosen('sort', [escapeText(sources.filter(function (s) { return s.id === sourceID; })[0].name)]);
             filter.set('sort', sources.map(function (s) { return {title: escapeText(s.name), source: s.id, selected: s.id === sourceID}; }));
             var seasons = [];
             items.forEach(function (item) { if (item.season != null && seasons.indexOf(String(item.season)) < 0) seasons.push(String(item.season)); });
             seasons.sort(function (a, b) { return Number(a) - Number(b); });
-            filter.set('filter', (seasons.length ? [{title: 'Все сезоны', season: '', selected: !season}] : []).concat(seasons.map(function (s) {
+            var options = [{title: 'Сбросить фильтр', reset: true, noselect: true}];
+            if (voices.length) options.push({title: 'Перевод', subtitle: escapeText(activeVoice()), noselect: true, kind: 'voice', items: voices.map(function (voice) {
+                return {title: escapeText(voice.name || 'Перевод'), online_url: voice.url, selected: !!voice.active};
+            })});
+            var seasonOptions = seasonChoices.length ? seasonChoices.map(function (choice) {
+                return {title: escapeText(choice.title), season: choice.season, online_url: choice.online_url, selected: choice.season === selectedSeason};
+            }) : (seasons.length ? [{title: 'Все сезоны', season: '', selected: !season}].concat(seasons.map(function (s) {
                 return {title: 'Сезон ' + escapeText(s), season: s, selected: season === s};
-            })).concat(voices.map(function (voice) { return {title: 'Озвучка: ' + escapeText(voice.name || 'Перевод'), online_url: voice.url, selected: voice.active}; })));
-            filter.chosen('filter', season ? ['Сезон ' + escapeText(season)] : []);
+            })) : []);
+            if (seasonOptions.length) options.push({title: 'Сезон', subtitle: escapeText(selectedSeason || season || 'Все сезоны'), noselect: true, kind: 'season', items: seasonOptions});
+            filter.set('filter', options.length > 1 ? options : []);
+            filter.chosen('filter', [selectedSeason || season ? 'Сезон: ' + escapeText(selectedSeason || season) : '', escapeText(activeVoice())].filter(Boolean));
             if (currentBackend && currentBackend.kind === 'rutube') scroll.append($('<div class="mycinema-message"></div>').text('Фильмы Rutube: название совпадает, год отличается не более чем на один. Проверьте год и продолжительность перед просмотром. Качество — Авто.'));
             if (discoveryErrors.length) scroll.append($('<div class="mycinema-message"></div>').text('Недоступные подключения: ' + discoveryErrors.join(' • ') + '. Нажмите «Обновить» для повторной проверки.'));
             if (sourceID === 'demo') scroll.append($('<div class="mycinema-message"></div>').text('Демонстрация плеера: Big Buck Bunny. Это тестовое видео, а не фильм из открытой карточки.'));
             if (onlineStack.length) scroll.append($('<div class="simple-button selector">Назад к выбору</div>').on('hover:enter', back));
+            historyRow = $('<div class="mycinema-history"><div class="mycinema-history-icon">' + ICON + '</div><div class="mycinema-history-text"></div><div class="mycinema-history-time"></div></div>');
+            historyRow.on('hover:focus', function () { last = historyRow[0]; scroll.update(historyRow, true); });
+            scroll.append(historyRow);
+            updateHistory();
             var visible = items.filter(function (item) { return !season || String(item.season) === season; });
             if (currentBackend && currentBackend.kind === 'rutube' && !visible.some(function (item) { return !item.browse; })) {
                 scroll.append($('<div class="mycinema-message"></div>').text('В этой выдаче Rutube фильм с подходящими названием и годом не найден. Можно проверить следующую страницу или другой источник.'));
             } else if (!visible.length) scroll.append($('<div class="mycinema-message"></div>').text('Для этой карточки видео не найдено. Выберите другой источник или добавьте фильм в каталог сервера.'));
             visible.forEach(function (item) {
-                var row = $('<div class="mycinema-row selector"><div class="mycinema-thumb">▶</div><div class="mycinema-body"><div class="mycinema-title"></div><div class="mycinema-info"></div><div class="mycinema-progress"></div></div><div class="mycinema-duration"></div></div>');
-                var labels = [item.voice, item.info];
-                if (item.episode != null) labels.unshift('Сезон ' + item.season + ' • Серия ' + item.episode);
-                row.find('.mycinema-title').text(item.title || item.voice || 'Видео');
-                row.find('.mycinema-info').text(labels.filter(Boolean).join(' • '));
-                row.find('.mycinema-duration').text(item.duration || '');
-                if (httpURL(item.poster)) row.find('.mycinema-thumb').empty().append($('<img alt="" />').attr('src', item.poster));
-                if (item.browse) row.find('.mycinema-thumb').text('›');
-                if (!item.demo && !item.browse) {
-                    var timeline = timelineFor(item);
-                    if (timeline && typeof Lampa.Timeline.render === 'function') row.find('.mycinema-progress').append(Lampa.Timeline.render(timeline));
-                }
+                var row = $('<div class="mycinema-row selector"><div class="mycinema-thumb"><div class="mycinema-number"></div></div><div class="mycinema-body"><div class="mycinema-title"></div><div class="mycinema-info"></div><div class="mycinema-progress"></div></div><div class="mycinema-meta"><div class="mycinema-duration"></div><div class="mycinema-quality"></div></div></div>');
+                row.data('mycinema-item', item);
+                row.find('.mycinema-number').text(item.browse ? '›' : item.episode != null ? ('0' + item.episode).slice(-Math.max(2, String(item.episode).length)) : '▶');
+                decorateRow(row, item);
                 row.on('hover:focus', function () { last = row[0]; scroll.update(row, true); });
                 row.on('hover:enter', function () { enter(item); });
                 scroll.append(row);
@@ -427,11 +552,11 @@
             refocus();
         }
         function load() {
-            onlineStack = []; voices = []; resolving = false; currentOnlineURL = '';
+            onlineStack = []; voices = []; seasonChoices = []; selectedSeason = ''; autoSeasonOpened = false; resolving = false; currentOnlineURL = '';
             var selected = sources.filter(function (s) { return s.id === sourceID; })[0];
             currentBackend = selected && selected.connection;
             catalogSourceID = selected && selected.catalogID || sourceID;
-            if (selected && selected.url) { loadOnline(selected.url, false); return; }
+            if (selected && selected.url) { loadOnline(searchURL(selected.url, currentBackend), false); return; }
             var ticket = ++generation;
             network.clear(); season = ''; items = [];
             if (sourceID === 'demo') { items = demoItems(); draw(); return; }
@@ -526,15 +651,31 @@
             else Lampa.Activity.backward();
         }
         this.create = function () {
+            files.render().addClass('mycinema-screen');
             files.appendHead(filter.render()); files.appendFiles(scroll.render());
             scroll.minus(files.render().find('.explorer__files-head'));
-            filter.render().find('.filter--search').remove();
+            filter.render().find('.filter--search').insertAfter(filter.render().find('.filter--filter'));
             filter.onBack = refocus;
-            filter.onSelect = function (type, choice) {
-                Lampa.Select.close();
-                if (type === 'sort') { sourceID = choice.source; Lampa.Storage.set(sourceStorageKey, sourceID); load(); }
-                else if (choice.online_url) loadOnline(choice.online_url, true);
-                else { season = choice.season; draw(); }
+            filter.onSearch = function (query, flags) {
+                query = String(query || '').trim();
+                if (!query) { refocus(); return; }
+                queryOverride = query; globalSearch = !!(flags && flags.global);
+                searchParams.search = query;
+                filter.render().find('.filter--search > div').text(query).removeClass('hide');
+                Lampa.Select.close(); load();
+            };
+            filter.onSelect = function (type, choice, subchoice) {
+                if (type === 'sort') { Lampa.Select.close(); sourceID = choice.source; Lampa.Storage.set(sourceStorageKey, sourceID); load(); }
+                else if (choice.reset) { Lampa.Select.close(); load(); }
+                else if (subchoice) {
+                    choice.items.forEach(function (entry) { entry.selected = entry === subchoice; });
+                    choice.subtitle = subchoice.title;
+                    if (choice.kind === 'voice') {
+                        voices.forEach(function (voice) { voice.active = voice.url === subchoice.online_url; });
+                        loadOnline(subchoice.online_url, false);
+                    } else if (subchoice.online_url) { selectedSeason = subchoice.season; voices = []; loadOnline(subchoice.online_url, false); }
+                    else { season = subchoice.season; draw(); }
+                }
             };
             if (filter.addButtonBack) filter.addButtonBack();
             var refresh = $('<div class="simple-button selector">Обновить</div>').on('hover:enter', discover);
@@ -543,6 +684,7 @@
         };
         this.start = function () {
             if (!isActive()) return;
+            updateMetadata(); updateHistory();
             Lampa.Controller.add('content', {
                 toggle: function () { Lampa.Controller.collectionSet(scroll.render(), files.render()); Lampa.Controller.collectionFocus(last || false, files.render()); },
                 up: function () { if (Navigator.canmove('up')) Navigator.move('up'); else Lampa.Controller.toggle('head'); },
@@ -556,7 +698,7 @@
         };
         this.render = function () { return files.render(); };
         this.pause = this.stop = function () {};
-        this.destroy = function () { alive = false; generation++; network.clear(); filter.destroy(); scroll.destroy(); files.destroy(); };
+        this.destroy = function () { alive = false; generation++; network.clear(); metadataNetwork.clear(); filter.destroy(); scroll.destroy(); files.destroy(); };
     }
 
     function onFull(event) {
@@ -592,17 +734,25 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.6.2', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.7.0', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
         $('<style>' +
-            '.mycinema-row{display:flex;align-items:center;margin-bottom:.8em;padding:.9em;border-radius:.4em;background:rgba(255,255,255,.08);border:.16em solid transparent;min-height:7.5em}' +
-            '.mycinema-row.focus{border-color:#fff;background:rgba(255,255,255,.16)}' +
-            '.mycinema-thumb{width:9em;height:5.1em;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:#343847;border-radius:.3em;overflow:hidden;font-size:1.1em}' +
-            '.mycinema-thumb img{width:100%;height:100%;object-fit:cover}.mycinema-body{flex:1;min-width:0;padding:0 1em}' +
-            '.mycinema-title{font-size:1.5em;margin-bottom:.5em}.mycinema-info{opacity:.7;font-size:.9em}.mycinema-duration{align-self:flex-start;opacity:.7}' +
-            '.mycinema-message{padding:1.2em;line-height:1.5;opacity:.8}.mycinema-progress{margin-top:.5em}' +
+            '.mycinema-screen .explorer__files{background:rgba(0,0,0,.2)}' +
+            '.mycinema-screen .filter--search>div{max-width:15em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+            '.mycinema-row{display:flex;align-items:center;position:relative;margin:.65em 0 1.25em;padding:.3em;border:.15em solid transparent;border-radius:.2em;min-height:7.7em}' +
+            '.mycinema-row.focus{border-color:#fff;background:rgba(255,255,255,.07)}' +
+            '.mycinema-thumb{position:relative;width:12em;height:7.4em;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(130deg,#242733,#11131b);border-radius:.2em;overflow:hidden}' +
+            '.mycinema-thumb img{position:absolute;width:100%;height:100%;object-fit:cover}.mycinema-number{z-index:1;position:relative;font-size:3em;font-weight:600;text-shadow:0 2px 6px #000}' +
+            '.mycinema-body{flex:1;min-width:0;padding:0 1.25em}.mycinema-title{font-size:1.45em;line-height:1.25;margin-bottom:.8em;overflow-wrap:break-word}' +
+            '.mycinema-info{opacity:.82;font-size:.9em;line-height:1.5}.mycinema-meta{align-self:stretch;flex-shrink:0;text-align:right;min-width:4em;max-width:8em;padding-top:.35em}' +
+            '.mycinema-duration{font-size:1.05em}.mycinema-quality{opacity:.75;font-size:.9em;line-height:1.4;margin-top:1.2em;overflow-wrap:break-word}' +
+            '.mycinema-message{padding:.8em .4em;line-height:1.5;opacity:.7;font-size:.9em}.mycinema-progress{margin-top:.65em}' +
+            '.mycinema-history{display:flex;align-items:center;gap:.8em;margin:.8em 0 1.2em;padding:.85em 1em;border:.15em solid transparent;border-radius:.25em;background:rgba(255,255,255,.07)}' +
+            '.mycinema-history.focus{border-color:#fff}.mycinema-history-icon{width:1.4em;height:1.4em;flex-shrink:0}.mycinema-history-icon svg{width:100%;height:100%}' +
+            '.mycinema-history-text{flex:1}.mycinema-history-time{opacity:.7}.mycinema-history--empty{opacity:.75}' +
+            '@media(max-width:580px){.mycinema-thumb{width:8em;height:5em}.mycinema-number{font-size:2.2em}.mycinema-title{font-size:1.15em;margin-bottom:.4em}.mycinema-body{padding:0 .7em}.mycinema-meta{min-width:3em;max-width:5em}.mycinema-quality{margin-top:.6em}}' +
             '</style>').appendTo('head');
     }
     if (window.appready) init();
