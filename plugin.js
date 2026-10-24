@@ -11,9 +11,11 @@
     function escapeText(value) { return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
     function serverURL() { return String(Lampa.Storage.field('mycinema_server') || '').replace(/\/+$/, ''); }
     var PUBLIC_SERVER = 'http://wtch.ch';
+    var CINEMA_SERVER = 'http://88.218.62.180:9118';
     // Reserved internal origin. These navigation URLs never reach the network.
     var DEVICE_ORIGIN = 'https://mycinema.invalid';
     function backend(kind) {
+        if (kind === 'cinema') return {kind: kind, base: String(Lampa.Storage.field('mycinema_cinema_url') || CINEMA_SERVER).trim().replace(/\/+$/, ''), token: ''};
         if (kind === 'rutube') return {kind: kind, base: DEVICE_ORIGIN, token: ''};
         if (kind === 'device') return {kind: kind, base: DEVICE_ORIGIN, token: '',
             host: String(Lampa.Storage.field('mycinema_filmix_host') || '').trim().replace(/\/+$/, ''),
@@ -236,22 +238,26 @@
         if (typeof value !== 'string' || !value) return '';
         try { var url = new URL(value.split(' or ')[0], base); return httpURL(url.href) ? url.href : ''; } catch (error) { return ''; }
     }
+    function reserveURL(value, base) {
+        return typeof value === 'string' ? directURL(value.split(' or ')[1], base) : '';
+    }
     function onlineItem(raw, type, base) {
         var method = raw.method || (type === 'season' || type === 'similar' ? 'link' : 'play');
-        var quality = {};
+        var quality = {}, qualityReserve = {};
         Object.keys(raw.quality || {}).forEach(function (key) {
             var value = directURL(raw.quality[key], base); if (value) quality[key] = value;
+            var reserve = reserveURL(raw.quality[key], base); if (reserve) qualityReserve[key] = reserve;
         });
         return {id: String(raw.id || raw.url || raw.title || raw.name || ''), method: method, kind: type,
             title: type === 'episode' ? raw.name || raw.title || raw.translate || 'Серия ' + raw.e : raw.translate || raw.name || raw.title || 'Видео',
             voice: raw.voice_name || raw.translate || '',
             info: [raw.year, raw.details, raw.maxquality].filter(Boolean).join(' • '),
-            url: directURL(raw.url, base), quality: quality,
+            url: directURL(raw.url, base), url_reserve: directURL(raw.url_reserve, base) || reserveURL(raw.url, base), quality: quality, qualityReserve: qualityReserve,
             subtitles: (Array.isArray(raw.subtitles) ? raw.subtitles : []).map(function (sub) {
                 return {label: sub.label || sub.name || '', url: directURL(sub.url, base)};
             }), headers: raw.headers, season: raw.s, episode: raw.e, poster: directURL(raw.img, base),
             date: raw.air_date || '', rating: raw.vote_average, qualityLabel: raw.maxquality || '',
-            duration: raw.duration, browse: method === 'link', hls_manifest_timeout: raw.hls_manifest_timeout};
+            segments: raw.segments, duration: raw.duration, browse: method === 'link', hls_manifest_timeout: raw.hls_manifest_timeout};
     }
     function mediaType(movie) { return movie.media_type === 'tv' || movie.first_air_date || movie.name ? 'tv' : 'movie'; }
     function namespace(movie) { return movie.source || 'tmdb'; }
@@ -275,6 +281,7 @@
         var filter = new Lampa.Filter(searchParams);
         var network = new Lampa.Reguest();
         var metadataNetwork = new Lampa.Reguest();
+        var playbackNetwork = new Lampa.Reguest(), playbackID = 0;
         var sources = [], sourceID = '', items = [], season = '', last = null;
         var ready = false, alive = true, generation = 0;
         var mode = Lampa.Storage.field('mycinema_mode') || 'all';
@@ -283,6 +290,25 @@
         var currentOnlineURL = '', onlineStack = [], voices = [], resolving = false;
         var seasonChoices = [], selectedSeason = '', queryOverride = object.clarification ? object.search || '' : '';
         var metadata = {}, metadataPending = {}, globalSearch = false, historyRow = null, autoSeasonOpened = false;
+        var voiceRestoreAttempts = 0;
+
+        function choiceKey() { return sourceID + '|' + movieKey(movie); }
+        function choices() { return Lampa.Storage.cache('mycinema_choices', 300, {}); }
+        function savedChoice() { return choices()[choiceKey()] || {}; }
+        function saveChoice(update) {
+            if (sourceID === 'demo') return;
+            var saved = choices(), key = choiceKey();
+            saved[key] = Object.assign({}, saved[key] || {}, update);
+            Lampa.Storage.set('mycinema_choices', saved);
+        }
+        function forgetChoice() {
+            var saved = choices(); delete saved[choiceKey()];
+            Lampa.Storage.set('mycinema_choices', saved);
+        }
+        function episodeTitle(item) {
+            var episode = episodeMetadata(item);
+            return episode.name && (!item.title || /^(?:(?:серия|episode)\s*\d+|\d+\s*(?:серия|episode))$/i.test(item.title)) ? episode.name : item.title || item.voice || 'Видео';
+        }
 
         function searchURL(url, connection) {
             if (!queryOverride) return url;
@@ -362,9 +388,10 @@
                 failed('Сервер не отвечает. Проверьте адрес, HTTPS и доступ из сети телевизора.');
             }, false, {dataType: 'json'});
         }
-        function readOnline(url, done, failed, jsonMode, connection) {
-            var discovery = !!connection;
+        function readOnline(url, done, failed, jsonMode, connection, transport) {
+            var discovery = !!connection && !transport;
             connection = connection || currentBackend;
+            transport = transport || network;
             try {
                 url = onlineURL(url, null, connection);
                 if (jsonMode) { var parsed = new URL(url); parsed.searchParams.set('rjson', 'true'); url = parsed.href; }
@@ -374,11 +401,11 @@
                 var route = connection.kind === 'rutube' ? '/rutube' : '/filmix';
                 if (internal.origin !== DEVICE_ORIGIN || internal.pathname !== route) { failed('Некорректный переход клиентского адаптера.'); return; }
                 internal.searchParams.forEach(function (value, key) { params[key] = value; });
-                if (connection.kind === 'rutube') { deviceRutube(params, network, function (data) { done(data, url); }, failed); return; }
-                deviceFilmix(params, connection, network, function (data) { done(data, url); }, failed); return;
+                if (connection.kind === 'rutube') { deviceRutube(params, transport, function (data) { done(data, url); }, failed); return; }
+                deviceFilmix(params, connection, transport, function (data) { done(data, url); }, failed); return;
             }
-            network.timeout(discovery ? 8000 : 30000);
-            network.native(url, function (data) {
+            transport.timeout(discovery ? 8000 : 30000);
+            transport.native(url, function (data) {
                 if (typeof data === 'string') { try { data = JSON.parse(data); } catch (error) { failed('Lampac вернул страницу вместо JSON. Проверьте адрес и доступ к API.'); return; } }
                 if (!data || typeof data !== 'object') { failed('Пустой ответ источника.'); return; }
                 if (data.rch) { failed('Этот источник требует Remote Control Hub. Настройте серверный доступ в Lampac или выберите другой источник.'); return; }
@@ -413,13 +440,20 @@
                     }
                 }
                 if (data.type === 'episode' && items.length && items[0].season != null) selectedSeason = String(items[0].season);
+                var wanted = savedChoice().voice;
+                var voice = voices.filter(function (entry) { return entry.name === wanted; })[0];
+                if (voice && !voice.active && voiceRestoreAttempts < 1 && (data.type === 'episode' || data.type === 'movie')) {
+                    voiceRestoreAttempts++;
+                    loadOnline(voice.url, false); return;
+                }
+                if (selectedSeason) saveChoice({season: selectedSeason});
                 draw();
                 enrichEpisodes();
             }, function (error) { if (alive && ticket === generation) message(error, function () { loadOnline(url, false); }); }, true);
         }
         function enter(item) {
             if (item.browse) {
-                if (item.kind === 'similar') { seasonChoices = []; selectedSeason = ''; autoSeasonOpened = false; }
+                if (item.kind === 'similar') { seasonChoices = []; selectedSeason = String(savedChoice().season || ''); autoSeasonOpened = false; voiceRestoreAttempts = 0; }
                 loadOnline(item.url, true); return;
             }
             if (item.method !== 'call') { chooseQuality(item); return; }
@@ -430,17 +464,26 @@
             readOnline(item.url, function (data, url) {
                 if (!alive || ticket !== generation) return;
                 resolving = false;
-                var resolved = onlineItem(data, 'movie', url);
+                var resolved = resolvedItem(data, url, item);
                 if (!resolved.url && !Object.keys(resolved.quality).length) { Lampa.Noty.show('Источник не вернул ссылку на поток.'); return; }
-                resolved.title = item.title; resolved.voice = item.voice; resolved.season = item.season; resolved.episode = item.episode;
                 chooseQuality(resolved);
             }, function (error) { if (alive && ticket === generation) { resolving = false; Lampa.Noty.show(error); } }, false);
         }
         function chooseQuality(item) {
-            var quality = item.quality || {}, keys = Object.keys(quality).filter(function (key) { return httpURL(quality[key]); });
-            if (keys.length < 2) { play(item, keys[0] ? quality[keys[0]] : item.url); return; }
-            Lampa.Select.show({title: 'Качество', items: keys.map(function (key) { return {title: escapeText(key), url: quality[key]}; }),
-                onBack: refocus, onSelect: function (choice) { Lampa.Select.close(); play(item, choice.url); }});
+            var quality = item.quality || {}, keys = Object.keys(quality).filter(function (key) { return httpURL(directURL(quality[key])); });
+            if (keys.length < 2) { play(item, keys[0] || ''); return; }
+            Lampa.Select.show({title: 'Качество', items: keys.map(function (key) { return {title: escapeText(key), quality_key: key}; }),
+                onBack: refocus, onSelect: function (choice) { Lampa.Select.close(); play(item, choice.quality_key); }});
+        }
+        function resolvedItem(data, url, item) {
+            var resolved = onlineItem(data, item.kind || 'movie', url);
+            ['id', 'title', 'season', 'episode', 'demo'].forEach(function (key) { resolved[key] = item[key]; });
+            resolved.voice = item.voice || activeVoice();
+            resolved.headers = resolved.headers || item.headers;
+            resolved.segments = resolved.segments || item.segments;
+            resolved.hls_manifest_timeout = resolved.hls_manifest_timeout || item.hls_manifest_timeout;
+            if (!resolved.subtitles.length) resolved.subtitles = item.subtitles || [];
+            return resolved;
         }
         function timelineFor(item) {
             var api = Lampa.Timeline;
@@ -451,25 +494,104 @@
                 return api.view(hash, meta);
             } catch (error) { return null; }
         }
-        function play(item, url) {
-            if (!httpURL(url)) { Lampa.Noty.show('Источник не вернул прямую ссылку на видео.'); return; }
-            var data = {url: url, title: item.demo ? item.title : (movie.title || movie.name) + ' • ' + (item.title || item.voice),
+        function playbackData(item, preferred) {
+            var quality = item.quality || {}, keys = Object.keys(quality).filter(function (key) { return httpURL(directURL(quality[key])); });
+            var key = keys.indexOf(preferred) >= 0 ? preferred : keys[0];
+            var raw = key ? quality[key] : item.url, url = directURL(raw);
+            var reserve = key ? (item.qualityReserve || {})[key] || reserveURL(raw) : item.url_reserve || reserveURL(raw);
+            if (!reserve && url === item.url) reserve = item.url_reserve;
+            var data = {url: url, title: item.demo ? item.title : (movie.title || movie.name) + ' • ' + episodeTitle(item),
                 subtitles: (Array.isArray(item.subtitles) ? item.subtitles : []).filter(function (sub) { return sub && httpURL(sub.url); })};
+            if (httpURL(reserve)) data.url_reserve = reserve;
             if (item.headers) data.headers = item.headers;
+            if (item.segments) data.segments = item.segments;
             if (item.hls_manifest_timeout) data.hls_manifest_timeout = item.hls_manifest_timeout;
             if (!item.demo) {
                 data.card = movie;
                 data.movie = movie;
+                data.season = item.season; data.episode = item.episode;
+                data.voice_name = item.voice || activeVoice();
                 var timeline = timelineFor(item);
                 if (timeline) data.timeline = timeline;
             }
+            return data;
+        }
+        function resolveNext(item, context, done, failed) {
+            function resolved(data, url) {
+                var result = resolvedItem(data, url, item);
+                if (!result.url && !Object.keys(result.quality).length) { failed('Источник не вернул ссылку на серию.'); return; }
+                done(result);
+            }
+            function call(row) {
+                readOnline(row.url, resolved, failed, false, context.connection, playbackNetwork);
+            }
+            if (item.method === 'call') { call(item); return; }
+            // Direct episode links can expire during a long season: refresh the list on demand.
+            readOnline(context.listURL, function (data, url) {
+                if (!data || data.type !== 'episode' || !Array.isArray(data.data)) { failed('Не удалось обновить список серий.'); return; }
+                var row = data.data.filter(function (raw) { return raw && String(raw.e) === String(item.episode) && (raw.s == null || String(raw.s) === String(item.season)); })[0];
+                if (!row) { failed('Серия больше не доступна в выбранном переводе.'); return; }
+                var fresh = onlineItem(row, 'episode', url);
+                if (fresh.method === 'call') call(fresh);
+                else resolved(row, url);
+            }, failed, true, context.connection, playbackNetwork);
+        }
+        function play(item, preferred) {
+            var data = playbackData(item, preferred);
+            if (!httpURL(data.url)) { Lampa.Noty.show('Источник не вернул прямую ссылку на видео.'); return; }
+            var session = ++playbackID;
+            playbackNetwork.clear();
+            function remember(row) {
+                if (row.demo || !alive || session !== playbackID) return;
+                var update = {};
+                if (row.season != null) update.season = String(row.season);
+                if (row.voice) update.voice = row.voice;
+                saveChoice(update);
+            }
+            var player = Lampa.Storage.field('player'), inner = !player || player === 'inner' || player === 'lampa';
+            var context = {connection: currentBackend, listURL: currentOnlineURL};
+            var voice = item.voice || activeVoice(), seen = Object.create(null);
+            var episodes = item.demo || item.episode == null ? [] : items.filter(function (row) {
+                var key = String(row.season) + ':' + String(row.episode);
+                if (row.browse || row.episode == null || String(row.season) !== String(item.season) || seen[key]) return false;
+                seen[key] = true; return true;
+            }).sort(function (a, b) { return Number(a.episode) - Number(b.episode); });
+            // External players receive concrete URLs; resolver callbacks belong to Lampa's inner player.
+            if (!inner && episodes.some(function (row) { return row.method === 'call'; })) episodes = [];
+            var playlist = episodes.map(function (row) {
+                var selected = String(row.episode) === String(item.episode);
+                var snapshot = Object.assign({}, row, {voice: row.voice || voice});
+                var entry = selected ? Object.assign({}, data) : playbackData(snapshot, preferred);
+                entry.callback = function () { remember(snapshot); };
+                if (!selected && inner && context.connection && context.listURL) {
+                    entry.url = function (ready) {
+                        if (!alive || session !== playbackID) return;
+                        var finished = false;
+                        function finish(resolved, error) {
+                            if (finished || !alive || session !== playbackID) return;
+                            finished = true;
+                            if (error) { entry.url = ''; Lampa.Noty.show(error); }
+                            else {
+                                delete entry.url_reserve;
+                                Object.assign(entry, playbackData(resolved, preferred));
+                                if (!httpURL(entry.url)) { entry.url = ''; Lampa.Noty.show('Ссылка на серию недоступна.'); }
+                            }
+                            ready();
+                        }
+                        resolveNext(snapshot, context, function (resolved) { finish(resolved); }, function (error) { finish(null, error); });
+                    };
+                }
+                return entry;
+            });
+            if (!playlist.length) playlist = [data];
+            if (playlist.length > 1) data.playlist = playlist;
+            remember(Object.assign({}, item, {voice: voice}));
             Lampa.Player.play(data);
-            Lampa.Player.playlist([data]);
+            Lampa.Player.playlist(playlist);
         }
         function decorateRow(row, item) {
             var episode = episodeMetadata(item), voice = item.voice || activeVoice();
-            var title = item.title || voice || 'Видео';
-            if (episode.name && (!item.title || /^(?:Серия|Episode)\s*\d+$/i.test(item.title))) title = episode.name;
+            var title = episodeTitle(item);
             var rating = Number(item.rating || episode.vote_average), date = item.date || episode.air_date;
             var labels = [];
             if (rating > 0 && rating <= 10) labels.push('★ ' + rating.toFixed(1));
@@ -507,12 +629,16 @@
             historyRow.find('.mycinema-history-time').text(resume && resume.timeline.time ? durationText(Number(resume.timeline.time)) : '');
             if (resume) historyRow.on('hover:enter', function () { enter(resume.item); });
         }
-        function draw() {
-            scroll.clear(); scroll.reset(); last = null;
+        function updateSourceMenu() {
+            var selected = sources.filter(function (s) { return s.id === sourceID; })[0];
             filter.render().find('.filter--sort span').text('Источник');
             filter.render().find('.filter--search').toggleClass('hide', !currentBackend);
-            filter.chosen('sort', [escapeText(sources.filter(function (s) { return s.id === sourceID; })[0].name)]);
+            filter.chosen('sort', selected ? [escapeText(selected.name)] : []);
             filter.set('sort', sources.map(function (s) { return {title: escapeText(s.name), source: s.id, selected: s.id === sourceID}; }));
+        }
+        function draw() {
+            scroll.clear(); scroll.reset(); last = null;
+            updateSourceMenu();
             var seasons = [];
             items.forEach(function (item) { if (item.season != null && seasons.indexOf(String(item.season)) < 0) seasons.push(String(item.season)); });
             seasons.sort(function (a, b) { return Number(a) - Number(b); });
@@ -552,10 +678,12 @@
             refocus();
         }
         function load() {
-            onlineStack = []; voices = []; seasonChoices = []; selectedSeason = ''; autoSeasonOpened = false; resolving = false; currentOnlineURL = '';
+            playbackID++; playbackNetwork.clear();
+            onlineStack = []; voices = []; seasonChoices = []; selectedSeason = String(savedChoice().season || ''); autoSeasonOpened = false; voiceRestoreAttempts = 0; resolving = false; currentOnlineURL = '';
             var selected = sources.filter(function (s) { return s.id === sourceID; })[0];
             currentBackend = selected && selected.connection;
             catalogSourceID = selected && selected.catalogID || sourceID;
+            updateSourceMenu(); filter.set('filter', []); filter.chosen('filter', []);
             if (selected && selected.url) { loadOnline(searchURL(selected.url, currentBackend), false); return; }
             var ticket = ++generation;
             network.clear(); season = ''; items = [];
@@ -591,6 +719,7 @@
             }
             var tasks = [], available = [];
             if (mode === 'all' || mode === 'device') {
+                if (mode === 'all' && Lampa.Storage.field('mycinema_cinema') !== 'no') tasks.push('cinema');
                 if (backend('device').host) tasks.push('device');
                 if (Lampa.Storage.field('mycinema_rutube') !== 'no' && mediaType(movie) !== 'tv') tasks.push('rutube');
                 if (mode === 'all') {
@@ -606,7 +735,7 @@
                     found({sources: available}); return;
                 }
                 var kind = tasks.shift(), connection = backend(kind);
-                var label = {device: 'На устройстве', direct: 'Свой адаптер', lampac: 'Свой Lampac', public: 'WTCH', catalog: 'Каталог'}[kind] || kind;
+                var label = {cinema: 'Cinema', device: 'На устройстве', direct: 'Свой адаптер', lampac: 'Свой Lampac', public: 'WTCH', catalog: 'Каталог'}[kind] || kind;
                 function error(text) { if (!alive || ticket !== generation) return; discoveryErrors.push(label + ': ' + text); next(); }
                 if (kind === 'rutube') {
                     available.push({id: 'device-rutube', name: 'Rutube • На устройстве', connection: connection,
@@ -636,8 +765,8 @@
                     if (!alive || ticket !== generation) return;
                     if (!Array.isArray(data)) { error('не получен список источников'); return; }
                     data.forEach(function (s, index) {
-                        if (!s || typeof s.url !== 'string' || typeof s.name !== 'string') return;
-                        try { available.push({id: kind + '-' + (s.balanser || index), name: s.name + (mode === 'all' ? ' • ' + label : ''),
+                        if (!s || s.show === false || typeof s.url !== 'string' || typeof s.name !== 'string') return;
+                        try { available.push({id: kind + '-' + (s.balanser || index), name: s.name.replace(/<[^>]*>/g, '') + (mode === 'all' || kind === 'cinema' ? ' • ' + label : ''),
                             connection: connection, url: onlineURL(s.url, onlineParams(movie), connection)}); }
                         catch (exception) { /* Skip invalid provider URLs. */ }
                     });
@@ -666,15 +795,20 @@
             };
             filter.onSelect = function (type, choice, subchoice) {
                 if (type === 'sort') { Lampa.Select.close(); sourceID = choice.source; Lampa.Storage.set(sourceStorageKey, sourceID); load(); }
-                else if (choice.reset) { Lampa.Select.close(); load(); }
+                else if (choice.reset) { Lampa.Select.close(); forgetChoice(); load(); }
                 else if (subchoice) {
                     choice.items.forEach(function (entry) { entry.selected = entry === subchoice; });
                     choice.subtitle = subchoice.title;
                     if (choice.kind === 'voice') {
                         voices.forEach(function (voice) { voice.active = voice.url === subchoice.online_url; });
+                        var selectedVoice = voices.filter(function (voice) { return voice.active; })[0];
+                        if (selectedVoice) saveChoice({voice: selectedVoice.name});
+                        voiceRestoreAttempts = 1;
                         loadOnline(subchoice.online_url, false);
-                    } else if (subchoice.online_url) { selectedSeason = subchoice.season; voices = []; loadOnline(subchoice.online_url, false); }
-                    else { season = subchoice.season; draw(); }
+                    } else if (subchoice.online_url) {
+                        selectedSeason = subchoice.season; saveChoice({season: selectedSeason});
+                        voiceRestoreAttempts = 0; voices = []; loadOnline(subchoice.online_url, false);
+                    } else { season = subchoice.season; saveChoice({season: season}); draw(); }
                 }
             };
             if (filter.addButtonBack) filter.addButtonBack();
@@ -698,7 +832,7 @@
         };
         this.render = function () { return files.render(); };
         this.pause = this.stop = function () {};
-        this.destroy = function () { alive = false; generation++; network.clear(); metadataNetwork.clear(); filter.destroy(); scroll.destroy(); files.destroy(); };
+        this.destroy = function () { alive = false; generation++; playbackID++; network.clear(); playbackNetwork.clear(); metadataNetwork.clear(); filter.destroy(); scroll.destroy(); files.destroy(); };
     }
 
     function onFull(event) {
@@ -718,8 +852,12 @@
         Lampa.SettingsApi.addComponent({component: ID, name: NAME, icon: ICON});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_server', type: 'input', default: ''},
             field: {name: 'Адрес личного API', description: 'Необязательный сервер пользователя для адаптеров и каталога. Например https://cinema.example.org.'}});
-        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_mode', type: 'select', values: {all: 'Все подключения', device: 'Напрямую с устройства', rutube: 'Rutube на устройстве', direct: 'Адаптеры личного API', public: 'Готовый сервер WTCH', lampac: 'Свой Lampac', catalog: 'Свой каталог'}, default: 'all'},
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_mode', type: 'select', values: {all: 'Все подключения', cinema: 'Источники Cinema', device: 'Напрямую с устройства', rutube: 'Rutube на устройстве', direct: 'Адаптеры личного API', public: 'Готовый сервер WTCH', lampac: 'Свой Lampac', catalog: 'Свой каталог'}, default: 'all'},
             field: {name: 'Режим', description: 'После смены режима откройте источник заново.'}});
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_cinema', type: 'select', values: {yes: 'Да', no: 'Нет'}, default: 'yes'},
+            field: {name: 'Cinema во всех подключениях', description: 'Добавлять источники стороннего сервера Cinema. Можно отключить независимо от остальных подключений.'}});
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_cinema_url', type: 'input', default: CINEMA_SERVER},
+            field: {name: 'Адрес Cinema', description: 'Адрес JSON API Lampac. HTTP может блокироваться браузером; доступность зависит от владельца сервера.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_rutube', type: 'select', values: {yes: 'Да', no: 'Нет'}, default: 'yes'},
             field: {name: 'Rutube: прямой поиск', description: 'Для фильмов. Поиск и получение потока выполняются на устройстве, без общего сервера и токена.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_filmix_host', type: 'input', default: ''},
@@ -734,7 +872,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.7.0', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.0', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
