@@ -404,7 +404,9 @@
                 if (connection.kind === 'rutube') { deviceRutube(params, transport, function (data) { done(data, url); }, failed); return; }
                 deviceFilmix(params, connection, transport, function (data) { done(data, url); }, failed); return;
             }
-            transport.timeout(discovery ? 8000 : 30000);
+            var requestTimeout = discovery && connection.kind !== 'cinema' ? 8000 : 30000;
+            var started = Date.now();
+            transport.timeout(requestTimeout);
             transport.native(url, function (data) {
                 if (typeof data === 'string') { try { data = JSON.parse(data); } catch (error) { failed('Lampac вернул страницу вместо JSON. Проверьте адрес и доступ к API.'); return; } }
                 if (!data || typeof data !== 'object') { failed('Пустой ответ источника.'); return; }
@@ -412,7 +414,21 @@
                 if (data.accsdb) { failed('Lampac требует авторизацию. Укажите свой токен доступа в настройках расширения.'); return; }
                 if (data.error) { failed('Источник вернул ошибку. Проверьте настройки и токены выбранного сервера.'); return; }
                 done(data, url);
-            }, function () { failed('Нет ответа от Lampac или источника. Проверьте HTTPS, CORS, адрес и токен доступа.'); }, false, {dataType: 'json'});
+            }, function (error, exception) {
+                var host = new URL(url).host;
+                var status = Number(error && error.status) || 0;
+                var reason = String(exception || error && error.statusText || '');
+                var elapsed = Math.round((Date.now() - started) / 100) / 10;
+                if (reason === 'timeout') { failed(host + ': Тайм-аут ' + requestTimeout / 1000 + ' с. Сервер не успел ответить. Нажмите «Повторить».'); return; }
+                if (reason === 'parsererror') { failed(host + ': Ответ не является JSON' + (status ? ' (HTTP ' + status + ')' : '') + '. Проверьте адрес API.'); return; }
+                if (reason === 'abort') { failed(host + ': Запрос отменён.'); return; }
+                if (status) { failed(host + ': HTTP ' + status + (status === 401 || status === 403 ? '. Сервер отклонил доступ.' : '. Ошибка ответа сервера.')); return; }
+                var nativeAndroid = Lampa.Platform && Lampa.Platform.is && Lampa.Platform.is('android');
+                var mixed = location.protocol === 'https:' && new URL(url).protocol === 'http:' && !nativeAndroid;
+                failed(host + ': Нет HTTP-ответа за ' + elapsed + ' с (статус 0). ' + (mixed ?
+                    'Lampa открыта по HTTPS, а API использует HTTP: возможна блокировка браузером. Нужен доступный HTTPS-адрес API.' :
+                    'Проверьте доступ к серверу из сети устройства; возможны ограничения сети, TLS или CORS.'));
+            }, false, {dataType: 'json', timeout: requestTimeout});
         }
         function loadOnline(url, push) {
             var ticket = ++generation;
@@ -872,7 +888,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.0', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.1', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);

@@ -144,6 +144,20 @@ setTimeout(() => {
         req = next(); assert.match(req.url, /\/lite\/hdvb/); req.ok({type: 'movie', data: [{name: 'Оригинал', url: 'https://cdn.example/hdvb.mp4'}]});
         assert.equal(rejected.html.find('.mycinema-row').length, 1); rejected.screen.destroy(); assert.equal(pending.length, 0);
         console.log('PASS: source selector remains usable after the first provider fails');
+        const timeoutScreen = create(); req = next(); assert.equal(req.options.timeout, 30000, 'Cinema discovery must allow slow cold lookups');
+        req.fail({status: 0, responseText: 'private-lampac-token'}, 'timeout');
+        assert.match(timeoutScreen.html.text(), /Тайм-аут 30 с/); assert.doesNotMatch(timeoutScreen.html.text(), /private-lampac-token/); timeoutScreen.screen.destroy();
+        for (const [error, reason, message] of [[{status: 403}, 'error', /HTTP 403/], [{status: 200}, 'parsererror', /не является JSON.*HTTP 200/], [{status: 0}, 'error', /статус 0/]]) {
+            const failure = create(); req = next(); req.fail(error, reason); assert.match(failure.html.text(), message); failure.screen.destroy();
+        }
+        dom.reconfigure({url: 'https://app.example/'}); L.Storage.set('mycinema_mode', 'cinema');
+        const secure = create(); req = next(); req.fail({status: 0}, 'error');
+        assert.match(secure.html.text(), /HTTPS.*HTTP.*возможна блокировка/); secure.screen.destroy();
+        L.Storage.set('mycinema_mode', 'lampac'); L.Storage.set('mycinema_lampac', 'https://private.example'); L.Storage.set('mycinema_access', 'private-lampac-token');
+        const privateScreen = create(); req = next(); assert.equal(req.options.timeout, 8000);
+        req.fail({status: 403, responseText: req.url}, 'error'); assert.match(privateScreen.html.text(), /HTTP 403/);
+        assert.doesNotMatch(privateScreen.html.text(), /private-lampac-token/); privateScreen.screen.destroy(); assert.equal(pending.length, 0);
+        console.log('PASS: Cinema 30-second discovery, private-server timeout, distinct timeout/HTTP/JSON/status-zero diagnostics, HTTPS/HTTP hint and secret redaction');
         console.log('Native Lampa:', L.Manifest.app_version);
     } catch (error) {console.error(error.stack); process.exitCode = 1;} finally {dom.window.close();}
 }, 200);
