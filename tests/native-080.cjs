@@ -104,7 +104,10 @@ setTimeout(() => {
         episodeThumb.find('img').trigger('load'); assert.ok(episodeThumb.hasClass('mycinema-thumb--loaded'));
         menu(tv.html, '.filter--sort'); assert.doesNotMatch($('.selectbox').text(), /Hidden|• Cinema/); L.Select.close();
         assert.doesNotMatch(tv.html.find('.filter--sort').text(), /Cinema/);
-        tv.html.find('.mycinema-row').eq(1).trigger('hover:enter'); select('720p');
+        const playsBefore = played.length;
+        tv.html.find('.mycinema-row').eq(1).trigger('hover:enter');
+        assert.equal(played.length, playsBefore + 1, 'a row starts playback immediately without a quality dialog');
+        assert.doesNotMatch($('.selectbox').text(), /Качество/);
         let data = played.at(-1), list = playlists.at(-1);
         assert.equal(data.url, 'https://cdn.example/old/1-1-720.mp4');
         assert.equal(data.url_reserve, 'https://backup.example/old/1-1-720.mp4');
@@ -135,7 +138,7 @@ setTimeout(() => {
         episodeResponse(req, 2, 'A'); req = next(); assert.equal(new URL(req.url).searchParams.get('t'), 'B'); episodeResponse(req, 2, 'B'); metadata();
         menu(restored.html, '.filter--filter'); select('Сбросить фильтр'); req = seasons(next()); assert.equal(new URL(req.url).searchParams.get('s'), '1'); episodeResponse(req); metadata();
         assert.equal(pending.length, 0, 'reset clears the voice preference');
-        restored.html.find('.mycinema-row').eq(1).trigger('hover:enter'); select('480p'); list = playlists.at(-1);
+        restored.html.find('.mycinema-row').eq(1).trigger('hover:enter'); list = playlists.at(-1);
         list[1].url(() => ready++); const stale = next(); restored.screen.destroy(); stale.ok({type: 'episode', data: episodes()}); assert.equal(ready, 2, 'destroyed screen cannot restart the Player');
         const other = create({...movie, source: 'other'}); req = seasons(discover()); assert.equal(new URL(req.url).searchParams.get('s'), '1'); episodeResponse(req); assert.equal(pending.length, 0, 'other namespaces do not request wrong TMDB metadata'); other.screen.destroy();
         console.log('PASS: saved season/voice, reopen restoration, explicit reset, namespace isolation and stale playback callback cleanup');
@@ -156,14 +159,22 @@ setTimeout(() => {
         L.Storage.set('mycinema_mode', 'catalog'); L.Storage.set('mycinema_server', 'https://catalog.example');
         const catalog = create(film); req = next(); assert.match(req.url, /\/api\/sources$/); req.ok({sources: [{id: 'library', name: 'Library'}]});
         req = next(); assert.equal(new URL(req.url).searchParams.get('source'), 'library');
-        req.ok({streams: [{id: 'local-film', title: 'Дубляж', voice: 'Студия', poster: 'https://art.example/source.jpg', quality: {'720p': 'https://cdn.example/local720.mp4', '1080p': 'https://cdn.example/local1080.mp4'}}]});
+        req.ok({streams: [
+            {id: 'local-film', title: 'Дубляж', voice: 'Студия', poster: 'https://art.example/source.jpg', quality: {'720p': 'https://cdn.example/local720.mp4', '1080p': 'https://cdn.example/local1080.mp4 or https://backup.example/local1080.mp4'}},
+            {id: 'uhd-film', title: 'UHD', quality: {'1080p': 'https://cdn.example/fhd.mp4', '720p': 'https://cdn.example/hd.mp4', '4K': 'https://cdn.example/uhd.mp4'}},
+            {id: 'invalid-quality', title: 'Safe URL', quality: {'1080p': 'javascript:alert(1)', '480p': 'https://cdn.example/sd.mp4', '720p': 'https://cdn.example/safe-hd.mp4'}}
+        ]});
         const filmThumb = catalog.html.find('.mycinema-thumb').first();
         assert.equal(filmThumb.find('img').attr('src'), 'https://art.example/source.jpg');
         filmThumb.find('img').trigger('error'); assert.match(filmThumb.find('img').attr('src'), /\/card-backdrop\.jpg$/);
         filmThumb.find('img').trigger('error'); assert.match(filmThumb.find('img').attr('src'), /\/card-poster\.jpg$/);
         filmThumb.find('img').trigger('error'); assert.equal(filmThumb.find('img').length, 0, 'fallback stops after the last image');
-        catalog.html.find('.mycinema-row').first().trigger('hover:enter'); select('1080p'); data = played.at(-1);
+        catalog.html.find('.mycinema-row').first().trigger('hover:enter'); data = played.at(-1);
         assert.equal(data.url, 'https://cdn.example/local1080.mp4'); assert.equal(data.card.id, film.id); assert.ok(data.timeline);
+        assert.equal(data.url_reserve, 'https://backup.example/local1080.mp4');
+        assert.equal(catalog.html.find('.mycinema-quality').first().text(), '1080p');
+        catalog.html.find('.mycinema-row').eq(1).trigger('hover:enter'); assert.equal(played.at(-1).url, 'https://cdn.example/uhd.mp4');
+        catalog.html.find('.mycinema-row').eq(2).trigger('hover:enter'); assert.equal(played.at(-1).url, 'https://cdn.example/safe-hd.mp4');
         menu(catalog.html, '.filter--sort'); select('Демо • Big Buck Bunny'); catalog.html.find('.mycinema-row').first().trigger('hover:enter'); data = played.at(-1);
         assert.equal(catalog.html.find('.mycinema-row img').length, 0, 'demo does not inherit the movie poster');
         assert.equal(data.card, undefined); assert.equal(data.timeline, undefined); assert.equal(playlists.at(-1).length, 1); assert.equal(pending.length, 0); catalog.screen.destroy();
@@ -193,12 +204,13 @@ setTimeout(() => {
         assert.equal(new URL(req.url).searchParams.get('token'), null);
         req.ok([{name: 'Filmix', balanser: 'fxapi', url: 'http://wtch.ch/lite/fxapi'}]); req = next();
         req.ok({type: 'season', data: [{method: 'link', id: 1, name: '1 сезон', url: 'http://wtch.ch/lite/fxapi?postid=163529&s=1'}]}); req = next();
-        const wtchRows = version => [1, 2].map(e => ({name: e + ' серия', s: 1, e, method: 'play', url: 'https://cdn.example/' + version + '-' + e + '-720.mp4', quality: {'720p': 'https://cdn.example/' + version + '-' + e + '-720.mp4', '480p': 'https://cdn.example/' + version + '-' + e + '-480.mp4'}}));
-        req.ok({type: 'episode', data: wtchRows('wtch')}); metadata(); wtch.html.find('.mycinema-row').first().trigger('hover:enter'); select('720p');
+        const wtchRows = version => [1, 2].map(e => ({name: e + ' серия', s: 1, e, method: 'play', url: 'https://cdn.example/' + version + '-' + e + '-720.mp4', quality: {'480p': 'https://cdn.example/' + version + '-' + e + '-480.mp4', '720p': 'https://cdn.example/' + version + '-' + e + '-720.mp4'}}));
+        req.ok({type: 'episode', data: wtchRows('wtch')}); metadata(); wtch.html.find('.mycinema-row').first().trigger('hover:enter');
         assert.equal(played.at(-1).url, 'https://cdn.example/wtch-1-720.mp4'); list = playlists.at(-1); let wtchReady = 0;
-        list[1].url(() => wtchReady++); req = next(); req.ok({type: 'episode', data: wtchRows('wtch-fresh')});
-        assert.equal(wtchReady, 1); assert.equal(list[1].url, 'https://cdn.example/wtch-fresh-2-720.mp4'); wtch.screen.destroy(); assert.equal(pending.length, 0);
-        console.log('PASS: WTCH 30-second discovery, anonymous fxapi season contract, actual 720p selection and 720p preservation on next episode');
+        list[1].url(() => wtchReady++); req = next(); const upgraded = wtchRows('wtch-fresh');
+        upgraded[1].quality['1080p'] = 'https://cdn.example/wtch-fresh-2-1080.mp4'; req.ok({type: 'episode', data: upgraded});
+        assert.equal(wtchReady, 1); assert.equal(list[1].url, 'https://cdn.example/wtch-fresh-2-1080.mp4'); wtch.screen.destroy(); assert.equal(pending.length, 0);
+        console.log('PASS: WTCH 30-second discovery, anonymous fxapi contract, automatic 720p and highest quality on fresh next-episode links');
         L.Storage.set('mycinema_mode', 'all'); L.Storage.set('mycinema_cinema', 'yes'); L.Storage.set('mycinema_cinema_url', origin);
         L.Storage.set('mycinema_server', ''); L.Storage.set('mycinema_lampac', ''); L.Storage.set('mycinema_source_all', 'cinema-filmix');
         const clean = create(film); req = discover();

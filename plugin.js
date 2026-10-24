@@ -473,7 +473,7 @@
                 if (item.kind === 'similar') { seasonChoices = []; selectedSeason = String(savedChoice().season || ''); autoSeasonOpened = false; voiceRestoreAttempts = 0; }
                 loadOnline(item.url, true); return;
             }
-            if (item.method !== 'call') { chooseQuality(item); return; }
+            if (item.method !== 'call') { play(item); return; }
             if (resolving) return;
             resolving = true;
             var ticket = generation;
@@ -483,14 +483,25 @@
                 resolving = false;
                 var resolved = resolvedItem(data, url, item);
                 if (!resolved.url && !Object.keys(resolved.quality).length) { Lampa.Noty.show('Источник не вернул ссылку на поток.'); return; }
-                chooseQuality(resolved);
+                play(resolved);
             }, function (error) { if (alive && ticket === generation) { resolving = false; Lampa.Noty.show(error); } }, false);
         }
-        function chooseQuality(item) {
-            var quality = item.quality || {}, keys = Object.keys(quality).filter(function (key) { return httpURL(directURL(quality[key])); });
-            if (keys.length < 2) { play(item, keys[0] || ''); return; }
-            Lampa.Select.show({title: 'Качество', items: keys.map(function (key) { return {title: escapeText(key), quality_key: key}; }),
-                onBack: refocus, onSelect: function (choice) { Lampa.Select.close(); play(item, choice.quality_key); }});
+        function availableQualities(item) {
+            var quality = item.quality || {};
+            function height(label) {
+                var dimensions = label.match(/(\d{3,4})\s*[x×]\s*(\d{3,4})/i);
+                if (dimensions) return Math.min(Number(dimensions[1]), Number(dimensions[2]));
+                if (/\b8k\b/i.test(label)) return 4320;
+                if (/\b4k\b|\buhd\b/i.test(label)) return 2160;
+                if (/\b2k\b|\bqhd\b/i.test(label)) return 1440;
+                var pixels = label.match(/\d{3,4}/);
+                if (pixels) return Number(pixels[0]);
+                if (/\bfhd\b|full\s*hd/i.test(label)) return 1080;
+                return /\bhd\b/i.test(label) ? 720 : 0;
+            }
+            return Object.keys(quality).filter(function (key) { return httpURL(directURL(quality[key])); }).map(function (key, index) {
+                return {key: key, height: height(key), index: index};
+            }).sort(function (a, b) { return b.height - a.height || a.index - b.index; }).map(function (entry) { return entry.key; });
         }
         function resolvedItem(data, url, item) {
             var resolved = onlineItem(data, item.kind || 'movie', url);
@@ -511,9 +522,8 @@
                 return api.view(hash, meta);
             } catch (error) { return null; }
         }
-        function playbackData(item, preferred) {
-            var quality = item.quality || {}, keys = Object.keys(quality).filter(function (key) { return httpURL(directURL(quality[key])); });
-            var key = keys.indexOf(preferred) >= 0 ? preferred : keys[0];
+        function playbackData(item) {
+            var quality = item.quality || {}, key = availableQualities(item)[0];
             var raw = key ? quality[key] : item.url, url = directURL(raw);
             var reserve = key ? (item.qualityReserve || {})[key] || reserveURL(raw) : item.url_reserve || reserveURL(raw);
             if (!reserve && url === item.url) reserve = item.url_reserve;
@@ -553,8 +563,8 @@
                 else resolved(row, url);
             }, failed, true, context.connection, playbackNetwork);
         }
-        function play(item, preferred) {
-            var data = playbackData(item, preferred);
+        function play(item) {
+            var data = playbackData(item);
             if (!httpURL(data.url)) { Lampa.Noty.show('Источник не вернул прямую ссылку на видео.'); return; }
             var session = ++playbackID;
             playbackNetwork.clear();
@@ -578,7 +588,7 @@
             var playlist = episodes.map(function (row) {
                 var selected = String(row.episode) === String(item.episode);
                 var snapshot = Object.assign({}, row, {voice: row.voice || voice});
-                var entry = selected ? Object.assign({}, data) : playbackData(snapshot, preferred);
+                var entry = selected ? Object.assign({}, data) : playbackData(snapshot);
                 entry.callback = function () { remember(snapshot); };
                 if (!selected && inner && context.connection && context.listURL) {
                     entry.url = function (ready) {
@@ -590,7 +600,7 @@
                             if (error) { entry.url = ''; Lampa.Noty.show(error); }
                             else {
                                 delete entry.url_reserve;
-                                Object.assign(entry, playbackData(resolved, preferred));
+                                Object.assign(entry, playbackData(resolved));
                                 if (!httpURL(entry.url)) { entry.url = ''; Lampa.Noty.show('Ссылка на серию недоступна.'); }
                             }
                             ready();
@@ -654,7 +664,7 @@
             row.find('.mycinema-title').text(title);
             row.find('.mycinema-info').text(labels.join(' • '));
             row.find('.mycinema-duration').text(durationText(item.duration || (episode.runtime ? episode.runtime * 60 : 0)));
-            var quality = item.qualityLabel || Object.keys(item.quality || {}).join(' / ');
+            var quality = availableQualities(item)[0] || item.qualityLabel || '';
             if (!quality && currentBackend && currentBackend.kind === 'rutube' && !item.browse) quality = 'Авто';
             row.find('.mycinema-quality').text(quality);
             decorateArtwork(row, item);
@@ -919,7 +929,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.4', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.5', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
