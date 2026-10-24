@@ -12,7 +12,7 @@ w.scrollTo = () => {};
 w.localStorage.setItem('language', 'ru');
 for (const file of ['vender/jquery/jquery.js', 'vender/navigator/navigator.js', 'vender/keypad/keypad.js']) w.eval(fs.readFileSync(path.join(runtime, file), 'utf8'));
 w.$.ajax = o => {setTimeout(() => o.error && o.error({status: 0}, 'abort'), 0); return {abort() {}};};
-try {w.eval(fs.readFileSync(path.join(runtime, 'app.min.js'), 'utf8'));} catch (_) {}
+try {w.eval(fs.readFileSync(process.argv[3] || path.join(runtime, 'app.min.js'), 'utf8'));} catch (_) {}
 setTimeout(() => {
     try {
         w.appready = true;
@@ -28,6 +28,23 @@ setTimeout(() => {
         };
         L.Controller.toggle = () => {};
         L.Timeline.init(); L.Select.init();
+        if (!L.Head.render()) L.Head.init();
+        if (!L.Settings.render()) L.Settings.init();
+        let settingsBody;
+        L.Settings.listener.follow('open', event => { if (event.name === 'mycinema') settingsBody = event.body; });
+        assert.doesNotThrow(() => L.Settings.create('mycinema'), 'plugin settings must open with empty input values');
+        assert.ok(settingsBody && settingsBody.find('[data-name="mycinema_mode"]').length);
+        assert.equal(settingsBody.find('[data-name="mycinema_server"] .settings-param__value').text(), 'Не задано');
+        const enabled = L.Controller.enabled;
+        L.Controller.enabled = () => ({name: 'settings_component'});
+        settingsBody.find('[data-name="mycinema_mode"]').trigger('hover:enter'); select('Готовый сервер WTCH'); L.Select.close();
+        assert.equal(L.Storage.field('mycinema_mode'), 'public');
+        L.Storage.set('mycinema_server', 'https://my-api.example');
+        assert.doesNotThrow(() => L.Settings.create('mycinema'), 'settings also open with saved input values');
+        assert.equal(settingsBody.find('[data-name="mycinema_mode"] .settings-param__value').text(), 'Готовый сервер WTCH');
+        assert.equal(settingsBody.find('[data-name="mycinema_server"] .settings-param__value').text(), 'https://my-api.example');
+        L.Storage.set('mycinema_server', ''); L.Controller.enabled = enabled;
+        console.log('PASS: native settings open with empty/saved inputs, WTCH mode selection and persistence after reopening');
         L.Player.play = data => played.push(data);
         L.Player.playlist = list => playlists.push(list);
         L.Noty.show = text => notices.push(text);

@@ -897,29 +897,29 @@
         initialized = true;
         Lampa.Component.add(ID, Screen);
         Lampa.SettingsApi.addComponent({component: ID, name: NAME, icon: ICON});
-        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_server', type: 'input', default: ''},
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_server', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Адрес личного API', description: 'Необязательный сервер пользователя для адаптеров и каталога. Например https://cinema.example.org.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_mode', type: 'select', values: {all: 'Все подключения', cinema: 'Источники Cinema', device: 'Напрямую с устройства', rutube: 'Rutube на устройстве', direct: 'Адаптеры личного API', public: 'Готовый сервер WTCH', lampac: 'Свой Lampac', catalog: 'Свой каталог'}, default: 'all'},
             field: {name: 'Режим', description: 'После смены режима откройте источник заново.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_cinema', type: 'select', values: {yes: 'Да', no: 'Нет'}, default: 'yes'},
             field: {name: 'Cinema во всех подключениях', description: 'Добавлять источники стороннего сервера Cinema. Можно отключить независимо от остальных подключений.'}});
-        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_cinema_url', type: 'input', default: CINEMA_SERVER},
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_cinema_url', type: 'input', values: '', placeholder: 'Не задано', default: CINEMA_SERVER},
             field: {name: 'Адрес Cinema', description: 'Адрес JSON API Lampac. HTTP может блокироваться браузером; доступность зависит от владельца сервера.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_rutube', type: 'select', values: {yes: 'Да', no: 'Нет'}, default: 'yes'},
             field: {name: 'Rutube: прямой поиск', description: 'Для фильмов. Поиск и получение потока выполняются на устройстве, без общего сервера и токена.'}});
-        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_filmix_host', type: 'input', default: ''},
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_filmix_host', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Filmix: HTTPS API', description: 'Экспериментальный прямой доступ с устройства, без общего сервера. Укажите доступный API host Filmix.'}});
-        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_filmix_token', type: 'input', default: ''},
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_filmix_token', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Filmix: личный токен', description: 'Только токен пользователя этого устройства. Хранится локально, отправляется указанному API Filmix.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_public', type: 'select', values: {no: 'Нет', yes: 'Да'}, default: 'no'},
             field: {name: 'Добавлять WTCH ко всем подключениям', description: 'Необязательный сторонний сервер. Использует HTTP; браузер может блокировать запросы.'}});
-        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_direct_access', type: 'input', default: ''},
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_direct_access', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Токен своего API', description: 'access_token из providers.local.json. Токены провайдеров остаются на сервере.'}});
-        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_lampac', type: 'input', default: ''},
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_lampac', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
-        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', default: ''},
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.3', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.4', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
