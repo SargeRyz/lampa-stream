@@ -255,7 +255,7 @@
             url: directURL(raw.url, base), url_reserve: directURL(raw.url_reserve, base) || reserveURL(raw.url, base), quality: quality, qualityReserve: qualityReserve,
             subtitles: (Array.isArray(raw.subtitles) ? raw.subtitles : []).map(function (sub) {
                 return {label: sub.label || sub.name || '', url: directURL(sub.url, base)};
-            }), headers: raw.headers, season: raw.s, episode: raw.e, poster: directURL(raw.img, base),
+            }), headers: raw.headers, season: raw.s, episode: raw.e, poster: directURL(raw.img || raw.thumbnail, base),
             date: raw.air_date || '', rating: raw.vote_average, qualityLabel: raw.maxquality || '',
             segments: raw.segments, duration: raw.duration, browse: method === 'link', hls_manifest_timeout: raw.hls_manifest_timeout};
     }
@@ -606,6 +606,41 @@
             Lampa.Player.play(data);
             Lampa.Player.playlist(playlist);
         }
+        function artworkFor(item) {
+            var images = [];
+            function add(url) { if (httpURL(url) && images.indexOf(url) < 0) images.push(url); }
+            function tmdb(path) {
+                if (httpURL(path)) { add(path); return; }
+                if (typeof path === 'string' && /^\/(?!\/).+/.test(path) && Lampa.TMDB && typeof Lampa.TMDB.image === 'function') add(Lampa.TMDB.image('t/p/w300' + path));
+            }
+            add(item.poster);
+            if (!item.demo && !item.browse) {
+                tmdb(episodeMetadata(item).still_path);
+                tmdb(movie.backdrop_path);
+                tmdb(movie.poster_path);
+                add(movie.img);
+            }
+            return images;
+        }
+        function decorateArtwork(row, item) {
+            var images = artworkFor(item), thumb = row.find('.mycinema-thumb');
+            var key = JSON.stringify(images);
+            if (thumb.attr('data-artwork') === key) return;
+            thumb.attr('data-artwork', key).removeAttr('data-image').removeClass('mycinema-thumb--loaded').find('img').off().remove();
+            if (!images.length) return;
+            var index = 0, image = $('<img alt="" />');
+            function nextImage() {
+                if (!alive) return;
+                thumb.removeClass('mycinema-thumb--loaded');
+                if (index >= images.length) { image.off().remove(); thumb.removeAttr('data-image'); return; }
+                var url = images[index++];
+                thumb.attr('data-image', url);
+                image.attr('src', url);
+            }
+            image.on('load', function () { if (alive) thumb.addClass('mycinema-thumb--loaded'); }).on('error', nextImage);
+            thumb.prepend(image);
+            nextImage();
+        }
         function decorateRow(row, item) {
             var episode = episodeMetadata(item), voice = item.voice || activeVoice();
             var title = episodeTitle(item);
@@ -622,13 +657,7 @@
             var quality = item.qualityLabel || Object.keys(item.quality || {}).join(' / ');
             if (!quality && currentBackend && currentBackend.kind === 'rutube' && !item.browse) quality = 'Авто';
             row.find('.mycinema-quality').text(quality);
-            var poster = item.poster;
-            if (!poster && episode.still_path && Lampa.TMDB && typeof Lampa.TMDB.image === 'function') poster = Lampa.TMDB.image('t/p/w300' + episode.still_path);
-            var thumb = row.find('.mycinema-thumb');
-            if (httpURL(poster) && thumb.attr('data-image') !== poster) {
-                thumb.attr('data-image', poster).find('img').remove();
-                thumb.prepend($('<img alt="" loading="lazy" />').attr('src', poster).on('error', function () { $(this).remove(); }));
-            }
+            decorateArtwork(row, item);
             if (!item.demo && !item.browse && Lampa.Timeline && typeof Lampa.Timeline.render === 'function') {
                 var timeline = timelineFor(item);
                 if (timeline) row.find('.mycinema-progress').empty().append(Lampa.Timeline.render(timeline));
@@ -686,6 +715,7 @@
             visible.forEach(function (item) {
                 var row = $('<div class="mycinema-row selector"><div class="mycinema-thumb"><div class="mycinema-number"></div></div><div class="mycinema-body"><div class="mycinema-title"></div><div class="mycinema-info"></div><div class="mycinema-progress"></div></div><div class="mycinema-meta"><div class="mycinema-duration"></div><div class="mycinema-quality"></div></div></div>');
                 row.data('mycinema-item', item);
+                row.find('.mycinema-thumb').toggleClass('mycinema-thumb--episode', item.episode != null);
                 row.find('.mycinema-number').text(item.browse ? '›' : item.episode != null ? ('0' + item.episode).slice(-Math.max(2, String(item.episode).length)) : '▶');
                 decorateRow(row, item);
                 row.on('hover:focus', function () { last = row[0]; scroll.update(row, true); });
@@ -783,7 +813,7 @@
                     if (!Array.isArray(data)) { error('не получен список источников'); return; }
                     data.forEach(function (s, index) {
                         if (!s || s.show === false || typeof s.url !== 'string' || typeof s.name !== 'string') return;
-                        try { available.push({id: kind + '-' + (s.balanser || index), name: s.name.replace(/<[^>]*>/g, '') + (mode === 'all' || kind === 'cinema' ? ' • ' + label : ''),
+                        try { available.push({id: kind + '-' + (s.balanser || index), name: s.name.replace(/<[^>]*>/g, '') + (mode === 'all' && kind !== 'cinema' ? ' • ' + label : ''),
                             connection: connection, url: onlineURL(s.url, onlineParams(movie), connection)}); }
                         catch (exception) { /* Skip invalid provider URLs. */ }
                     });
@@ -889,7 +919,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.2', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.3', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
@@ -900,6 +930,7 @@
             '.mycinema-row.focus{border-color:#fff;background:rgba(255,255,255,.07)}' +
             '.mycinema-thumb{position:relative;width:12em;height:7.4em;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(130deg,#242733,#11131b);border-radius:.2em;overflow:hidden}' +
             '.mycinema-thumb img{position:absolute;width:100%;height:100%;object-fit:cover}.mycinema-number{z-index:1;position:relative;font-size:3em;font-weight:600;text-shadow:0 2px 6px #000}' +
+            '.mycinema-thumb--loaded .mycinema-number{display:none}.mycinema-thumb--loaded.mycinema-thumb--episode .mycinema-number{display:block;position:absolute;top:.5em;left:.5em;padding:.2em .4em;border-radius:.2em;background:rgba(0,0,0,.55);font-size:1em}' +
             '.mycinema-body{flex:1;min-width:0;padding:0 1.25em}.mycinema-title{font-size:1.45em;line-height:1.25;margin-bottom:.8em;overflow-wrap:break-word}' +
             '.mycinema-info{opacity:.82;font-size:.9em;line-height:1.5}.mycinema-meta{align-self:stretch;flex-shrink:0;text-align:right;min-width:4em;max-width:8em;padding-top:.35em}' +
             '.mycinema-duration{font-size:1.05em}.mycinema-quality{opacity:.75;font-size:.9em;line-height:1.4;margin-top:1.2em;overflow-wrap:break-word}' +

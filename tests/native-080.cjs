@@ -38,7 +38,7 @@ setTimeout(() => {
         L.Storage.set('kit_aesgcmkey', 'not-for-public-api');
         L.Storage.set('player', 'inner');
         const Cls = L.Component.get('mycinema');
-        const movie = {id: 100088, source: 'tmdb', media_type: 'tv', name: 'Одни из нас', original_name: 'The Last of Us', first_air_date: '2023-01-15', overview: 'Fixture', genres: [], production_countries: []};
+        const movie = {id: 100088, source: 'tmdb', media_type: 'tv', name: 'Одни из нас', original_name: 'The Last of Us', first_air_date: '2023-01-15', overview: 'Fixture', genres: [], production_countries: [], backdrop_path: '/card-backdrop.jpg', poster_path: '/card-poster.jpg'};
         function create(card = movie) {
             const screen = new Cls({movie: {...card}}); screen.activity = {loader() {}};
             L.Activity.active = () => ({activity: screen.activity});
@@ -72,14 +72,21 @@ setTimeout(() => {
             hls_manifest_timeout: 30000}));}
         function episodeResponse(req, s = 1, active = 'A', data = episodes(s)) {req.ok({type: 'episode', voice: voices(s, active), data});}
         function metadata() {
-            if (pending[0] && pending[0].url.includes('/tv/100088/season/')) next().ok({episodes: [1, 2, 3].map(e => ({episode_number: e, name: 'Название серии ' + e, runtime: 52, air_date: '2023-01-15', vote_average: 8.2}))});
+            if (pending[0] && pending[0].url.includes('/tv/100088/season/')) next().ok({episodes: [1, 2, 3].map(e => ({episode_number: e, name: 'Название серии ' + e, runtime: 52, air_date: '2023-01-15', vote_average: 8.2, still_path: e === 1 ? '/episode-1.jpg' : null}))});
         }
         const tv = create();
         let req = seasons(discover()); assert.equal(new URL(req.url).searchParams.get('s'), '1');
-        episodeResponse(req); metadata();
+        episodeResponse(req);
+        assert.match(tv.html.find('.mycinema-row img').eq(1).attr('src'), /\/card-backdrop\.jpg$/, 'card artwork is available before optional metadata');
+        metadata();
         assert.equal(tv.html.find('.mycinema-row').length, 3);
         assert.equal(tv.html.find('.mycinema-title').eq(1).text(), 'Название серии 1', 'real Lampac name format receives TMDB episode title');
-        menu(tv.html, '.filter--sort'); assert.doesNotMatch($('.selectbox').text(), /Hidden/); L.Select.close();
+        const episodeThumb = tv.html.find('.mycinema-thumb').eq(1);
+        assert.match(episodeThumb.find('img').attr('src'), /\/episode-1\.jpg$/, 'episode still replaces card artwork');
+        episodeThumb.find('img').trigger('error'); assert.match(episodeThumb.find('img').attr('src'), /\/card-backdrop\.jpg$/);
+        episodeThumb.find('img').trigger('load'); assert.ok(episodeThumb.hasClass('mycinema-thumb--loaded'));
+        menu(tv.html, '.filter--sort'); assert.doesNotMatch($('.selectbox').text(), /Hidden|• Cinema/); L.Select.close();
+        assert.doesNotMatch(tv.html.find('.filter--sort').text(), /Cinema/);
         tv.html.find('.mycinema-row').eq(1).trigger('hover:enter'); select('720p');
         let data = played.at(-1), list = playlists.at(-1);
         assert.equal(data.url, 'https://cdn.example/old/1-1-720.mp4');
@@ -132,15 +139,21 @@ setTimeout(() => {
         L.Storage.set('mycinema_mode', 'catalog'); L.Storage.set('mycinema_server', 'https://catalog.example');
         const catalog = create(film); req = next(); assert.match(req.url, /\/api\/sources$/); req.ok({sources: [{id: 'library', name: 'Library'}]});
         req = next(); assert.equal(new URL(req.url).searchParams.get('source'), 'library');
-        req.ok({streams: [{id: 'local-film', title: 'Дубляж', voice: 'Студия', quality: {'720p': 'https://cdn.example/local720.mp4', '1080p': 'https://cdn.example/local1080.mp4'}}]});
+        req.ok({streams: [{id: 'local-film', title: 'Дубляж', voice: 'Студия', poster: 'https://art.example/source.jpg', quality: {'720p': 'https://cdn.example/local720.mp4', '1080p': 'https://cdn.example/local1080.mp4'}}]});
+        const filmThumb = catalog.html.find('.mycinema-thumb').first();
+        assert.equal(filmThumb.find('img').attr('src'), 'https://art.example/source.jpg');
+        filmThumb.find('img').trigger('error'); assert.match(filmThumb.find('img').attr('src'), /\/card-backdrop\.jpg$/);
+        filmThumb.find('img').trigger('error'); assert.match(filmThumb.find('img').attr('src'), /\/card-poster\.jpg$/);
+        filmThumb.find('img').trigger('error'); assert.equal(filmThumb.find('img').length, 0, 'fallback stops after the last image');
         catalog.html.find('.mycinema-row').first().trigger('hover:enter'); select('1080p'); data = played.at(-1);
         assert.equal(data.url, 'https://cdn.example/local1080.mp4'); assert.equal(data.card.id, film.id); assert.ok(data.timeline);
         menu(catalog.html, '.filter--sort'); select('Демо • Big Buck Bunny'); catalog.html.find('.mycinema-row').first().trigger('hover:enter'); data = played.at(-1);
+        assert.equal(catalog.html.find('.mycinema-row img').length, 0, 'demo does not inherit the movie poster');
         assert.equal(data.card, undefined); assert.equal(data.timeline, undefined); assert.equal(playlists.at(-1).length, 1); assert.equal(pending.length, 0); catalog.screen.destroy();
         console.log('PASS: existing catalog, quality selection, movie Timeline and demo history isolation');
         L.Storage.set('mycinema_mode', 'cinema'); L.Storage.set('mycinema_cinema_url', origin);
         const rejected = create(); req = discover(); req.ok({rch: true});
-        assert.match(rejected.html.text(), /Remote Control Hub/); menu(rejected.html, '.filter--sort'); select('HDVB • Cinema');
+        assert.match(rejected.html.text(), /Remote Control Hub/); menu(rejected.html, '.filter--sort'); select('HDVB');
         req = next(); assert.match(req.url, /\/lite\/hdvb/); req.ok({type: 'movie', data: [{name: 'Оригинал', url: 'https://cdn.example/hdvb.mp4'}]});
         assert.equal(rejected.html.find('.mycinema-row').length, 1); rejected.screen.destroy(); assert.equal(pending.length, 0);
         console.log('PASS: source selector remains usable after the first provider fails');
@@ -169,6 +182,18 @@ setTimeout(() => {
         list[1].url(() => wtchReady++); req = next(); req.ok({type: 'episode', data: wtchRows('wtch-fresh')});
         assert.equal(wtchReady, 1); assert.equal(list[1].url, 'https://cdn.example/wtch-fresh-2-720.mp4'); wtch.screen.destroy(); assert.equal(pending.length, 0);
         console.log('PASS: WTCH 30-second discovery, anonymous fxapi season contract, actual 720p selection and 720p preservation on next episode');
+        L.Storage.set('mycinema_mode', 'all'); L.Storage.set('mycinema_cinema', 'yes'); L.Storage.set('mycinema_cinema_url', origin);
+        L.Storage.set('mycinema_server', ''); L.Storage.set('mycinema_lampac', ''); L.Storage.set('mycinema_source_all', 'cinema-filmix');
+        const clean = create(film); req = discover();
+        req.ok({type: 'similar', data: [{name: 'Другая картина', method: 'link', url: '/lite/filmix?postid=20'}, {name: 'Свой постер', method: 'link', url: '/lite/filmix?postid=21', img: '/proxyimg/own.jpg'}]});
+        assert.equal(clean.html.find('.mycinema-row').first().find('img').length, 0, 'other search results do not inherit the current card');
+        assert.equal(clean.html.find('.mycinema-row').eq(1).find('img').attr('src'), origin + '/proxyimg/own.jpg');
+        menu(clean.html, '.filter--sort'); assert.doesNotMatch($('.selectbox').text(), /• Cinema/); select('HDVB');
+        req = next(); req.ok({type: 'movie', data: [{name: 'Оригинал', url: 'https://cdn.example/movie.mp4'}]});
+        assert.match(clean.html.find('.mycinema-row img').attr('src'), /\/card-backdrop\.jpg$/, 'movie rows without source images use card artwork');
+        assert.doesNotMatch(clean.html.find('.filter--sort').text(), /Cinema/);
+        clean.screen.destroy(); assert.equal(pending.length, 0);
+        console.log('PASS: movie/episode previews, broken-image fallback, demo/search artwork isolation and clean Cinema names in both modes');
         console.log('Native Lampa:', L.Manifest.app_version);
     } catch (error) {console.error(error.stack); process.exitCode = 1;} finally {dom.window.close();}
 }, 200);
