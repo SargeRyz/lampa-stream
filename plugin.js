@@ -404,7 +404,8 @@
                 if (connection.kind === 'rutube') { deviceRutube(params, transport, function (data) { done(data, url); }, failed); return; }
                 deviceFilmix(params, connection, transport, function (data) { done(data, url); }, failed); return;
             }
-            var requestTimeout = discovery && connection.kind !== 'cinema' ? 8000 : 30000;
+            var publicConnection = connection.kind === 'cinema' || connection.kind === 'public';
+            var requestTimeout = discovery && !publicConnection ? 8000 : 30000;
             var started = Date.now();
             transport.timeout(requestTimeout);
             transport.native(url, function (data) {
@@ -888,7 +889,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.1', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.2', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);

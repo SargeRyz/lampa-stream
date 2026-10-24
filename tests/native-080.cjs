@@ -158,6 +158,17 @@ setTimeout(() => {
         req.fail({status: 403, responseText: req.url}, 'error'); assert.match(privateScreen.html.text(), /HTTP 403/);
         assert.doesNotMatch(privateScreen.html.text(), /private-lampac-token/); privateScreen.screen.destroy(); assert.equal(pending.length, 0);
         console.log('PASS: Cinema 30-second discovery, private-server timeout, distinct timeout/HTTP/JSON/status-zero diagnostics, HTTPS/HTTP hint and secret redaction');
+        L.Storage.set('mycinema_mode', 'public');
+        const wtch = create(); req = next(); assert.equal(req.options.timeout, 30000); assert.equal(new URL(req.url).host, 'wtch.ch');
+        assert.equal(new URL(req.url).searchParams.get('token'), null);
+        req.ok([{name: 'Filmix', balanser: 'fxapi', url: 'http://wtch.ch/lite/fxapi'}]); req = next();
+        req.ok({type: 'season', data: [{method: 'link', id: 1, name: '1 сезон', url: 'http://wtch.ch/lite/fxapi?postid=163529&s=1'}]}); req = next();
+        const wtchRows = version => [1, 2].map(e => ({name: e + ' серия', s: 1, e, method: 'play', url: 'https://cdn.example/' + version + '-' + e + '-720.mp4', quality: {'720p': 'https://cdn.example/' + version + '-' + e + '-720.mp4', '480p': 'https://cdn.example/' + version + '-' + e + '-480.mp4'}}));
+        req.ok({type: 'episode', data: wtchRows('wtch')}); metadata(); wtch.html.find('.mycinema-row').first().trigger('hover:enter'); select('720p');
+        assert.equal(played.at(-1).url, 'https://cdn.example/wtch-1-720.mp4'); list = playlists.at(-1); let wtchReady = 0;
+        list[1].url(() => wtchReady++); req = next(); req.ok({type: 'episode', data: wtchRows('wtch-fresh')});
+        assert.equal(wtchReady, 1); assert.equal(list[1].url, 'https://cdn.example/wtch-fresh-2-720.mp4'); wtch.screen.destroy(); assert.equal(pending.length, 0);
+        console.log('PASS: WTCH 30-second discovery, anonymous fxapi season contract, actual 720p selection and 720p preservation on next episode');
         console.log('Native Lampa:', L.Manifest.app_version);
     } catch (error) {console.error(error.stack); process.exitCode = 1;} finally {dom.window.close();}
 }, 200);
