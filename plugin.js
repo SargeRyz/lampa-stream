@@ -301,7 +301,7 @@
         var seasonChoices = [], selectedSeason = '', queryOverride = object.clarification ? object.search || '' : '';
         var metadata = {}, metadataPending = {}, globalSearch = false, historyRow = null, autoSeasonOpened = false;
         var voiceRestoreAttempts = 0;
-        var compactUI = Lampa.Storage.get('mycinema_compact_ui', true), viewButton, seasonButton, voiceButton;
+        var compactUI = Lampa.Storage.value('mycinema_compact_ui', 'true') !== 'false', viewButton, seasonButton, voiceButton;
 
         function choiceKey() { return sourceID + '|' + movieKey(movie); }
         function choices() { return Lampa.Storage.cache('mycinema_choices', 300, {}); }
@@ -1132,7 +1132,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.15', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.16', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
