@@ -593,7 +593,30 @@
                 else resolved(row, url);
             }, failed, true, context.connection, playbackNetwork);
         }
-        function playerClosed() { audioRequest++; audioNetwork.clear(); cancelAudioSeek(); }
+        var qualityPicker = null, qualityPickerPrevious = null, qualityPickerMenu = null, qualityPickerSession = 0;
+        function releaseQualityPicker() {
+            if (qualityPicker && Lampa.Select.show === qualityPicker) Lampa.Select.show = qualityPickerPrevious;
+            qualityPicker = null; qualityPickerPrevious = null; qualityPickerMenu = null; qualityPickerSession = 0;
+        }
+        function installQualityPicker(menu, session) {
+            qualityPickerMenu = Object.assign({}, menu); qualityPickerSession = session;
+            if (qualityPicker) return;
+            qualityPickerPrevious = Lampa.Select.show;
+            qualityPicker = function (params) {
+                var work = Lampa.Player.playdata();
+                if (alive && work && work.mycinema_session === playbackID && playbackID === qualityPickerSession &&
+                    params && params.title === Lampa.Lang.translate('player_quality') && qualityPickerMenu) {
+                    params = Object.assign({}, params, {items: Object.keys(qualityPickerMenu).map(function (key) {
+                        var entry = qualityPickerMenu[key];
+                        return {quality: key, title: key, url: entry.url, selected: key === escapeText(work.mycinema_quality),
+                            call: entry.call, instance: entry};
+                    })});
+                }
+                return qualityPickerPrevious.apply(this, [params]);
+            };
+            Lampa.Select.show = qualityPicker;
+        }
+        function playerClosed() { releaseQualityPicker(); audioRequest++; audioNetwork.clear(); cancelAudioSeek(); }
         function configureAudio(data, embedded) {
             if (!alive || !data || data.mycinema_session !== playbackID || !data.mycinema_voiceovers) return;
             embedded = embedded || data.mycinema_native_tracks;
@@ -611,6 +634,7 @@
             configureAudio(data);
         }
         function playerReady(data) {
+            if (data && data.mycinema_session === playbackID && data.mycinema_quality_menu) installQualityPicker(data.mycinema_quality_menu, playbackID);
             configureAudio(data);
             if (data && data.mycinema_session === playbackID && data.mycinema_quality_menu && Lampa.PlayerPanel.quality) Lampa.PlayerPanel.quality(data.mycinema_quality_menu, data.url);
         }
@@ -656,7 +680,7 @@
                     ready(url);
                 }};
             });
-            if (keys.length) { data.quality = menu; data.mycinema_quality_menu = menu; }
+            if (keys.length) { data.quality = menu; data.mycinema_quality_menu = menu; installQualityPicker(menu, session); }
         }
         function attachVoices(data, item, context, session, inner) {
             // Keep native track detection enabled; real multi-track streams take priority.
@@ -1164,7 +1188,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.9', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.10', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
