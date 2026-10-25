@@ -602,8 +602,12 @@
             if (Lampa.PlayerPanel.setTracks) Lampa.PlayerPanel.setTracks(nativeTracks ? embedded : data.mycinema_voiceovers);
         }
         function playerStart(data) {
-            // Native PlayerPanel consumes voiceovers on start; stream discovery stays enabled afterwards.
-            if (data && data.mycinema_session === playbackID) delete data.voiceovers;
+            // Keep explicit URLs for every rendition; enforce our per-session default at launch.
+            if (data && data.mycinema_session === playbackID) {
+                delete data.voiceovers;
+                var chosen = data.mycinema_quality_menu && data.mycinema_quality_menu[escapeText(data.mycinema_quality)];
+                if (chosen && httpURL(chosen.url)) data.url = chosen.url;
+            }
             configureAudio(data);
         }
         function playerReady(data) {
@@ -635,13 +639,11 @@
             if (keys.length === 1 && !qualityHeight(keys[0])) return;
             keys.forEach(function (key) {
                 var url = directURL(item.quality[key]), name = escapeText(key);
-                menu[name] = {call: function (instance, ready) {
+                menu[name] = {url: url, call: function (instance, ready) {
                     var work = Lampa.Player.playdata();
                     if (!alive || session !== playbackID || !work || work.mycinema_session !== session || String(work.episode) !== String(item.episode)) return;
                     if (audioSeeking || episodeResolving) { Lampa.Noty.show('Дождитесь загрузки текущего переключения.'); return; }
                     context.quality.key = key;
-                    Object.keys(menu).forEach(function (name) { delete menu[name].url; });
-                    menu[name].url = url;
                     var reserve = (item.qualityReserve || {})[key] || reserveURL(item.quality[key]);
                     work.url = url; work.mycinema_quality = key;
                     delete work.url_reserve; delete work.mycinema_native_tracks;
@@ -653,7 +655,6 @@
                     });
                     ready(url);
                 }};
-                if (key === data.mycinema_quality) menu[name].url = url;
             });
             if (keys.length) { data.quality = menu; data.mycinema_quality_menu = menu; }
         }
@@ -1163,7 +1164,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.8', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.9', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
