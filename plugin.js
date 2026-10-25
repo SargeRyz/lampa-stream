@@ -5,7 +5,6 @@
 
     var ID = 'mycinema', NAME = 'Мой кинотеатр', initialized = false, playbackSequence = 0;
     var ICON = '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm-2 5 7 5-7 5z"/></svg>';
-    var DEMO = 'https://media.w3.org/2010/05/bunny/movie.mp4';
 
     function httpURL(value) { return typeof value === 'string' && /^https?:\/\/[^\s]+$/i.test(value); }
     function escapeText(value) { return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
@@ -275,10 +274,6 @@
     function mediaType(movie) { return movie.media_type === 'tv' || movie.first_air_date || movie.name ? 'tv' : 'movie'; }
     function namespace(movie) { return movie.source || 'tmdb'; }
     function movieKey(movie) { return [namespace(movie), mediaType(movie), movie.id].join(':'); }
-    function demoItems() {
-        return [{id: 'bbb', title: 'Big Buck Bunny — тестовое видео', voice: 'Без диалогов', duration: '09:56',
-            info: '© 2008 Blender Foundation • CC BY 3.0 • MP4', url: DEMO, demo: true}];
-    }
     function open(movie) {
         Lampa.Activity.push({url: '', title: NAME, component: ID, movie: movie, page: 1});
     }
@@ -311,7 +306,6 @@
         function choices() { return Lampa.Storage.cache('mycinema_choices', 300, {}); }
         function savedChoice() { return choices()[choiceKey()] || {}; }
         function saveChoice(update) {
-            if (sourceID === 'demo') return;
             var saved = choices(), key = choiceKey();
             saved[key] = Object.assign({}, saved[key] || {}, update);
             Lampa.Storage.set('mycinema_choices', saved);
@@ -848,7 +842,6 @@
             filter.chosen('filter', [selectedSeason || season ? 'Сезон: ' + escapeText(selectedSeason || season) : '', escapeText(activeVoice())].filter(Boolean));
             if (currentBackend && currentBackend.kind === 'rutube') scroll.append($('<div class="mycinema-message"></div>').text('Фильмы Rutube: название совпадает, год отличается не более чем на один. Проверьте год и продолжительность перед просмотром. Качество — Авто.'));
             if (discoveryErrors.length) scroll.append($('<div class="mycinema-message"></div>').text('Недоступные подключения: ' + discoveryErrors.join(' • ') + '. Нажмите «Обновить» для повторной проверки.'));
-            if (sourceID === 'demo') scroll.append($('<div class="mycinema-message"></div>').text('Демонстрация плеера: Big Buck Bunny. Это тестовое видео, а не фильм из открытой карточки.'));
             if (onlineStack.length) scroll.append($('<div class="simple-button selector">Назад к выбору</div>').on('hover:enter', back));
             historyRow = $('<div class="mycinema-history"><div class="mycinema-history-icon">' + ICON + '</div><div class="mycinema-history-text"></div><div class="mycinema-history-time"></div></div>');
             historyRow.on('hover:focus', function () { last = historyRow[0]; scroll.update(historyRow, true); });
@@ -903,7 +896,6 @@
             }
             var ticket = ++generation;
             network.clear(); season = ''; items = [];
-            if (sourceID === 'demo') { items = demoItems(); draw(); return; }
             message('Ищем видео…');
             var query = '?source=' + encodeURIComponent(catalogSourceID) + '&id=' + encodeURIComponent(movie.id) +
                 '&media_type=' + encodeURIComponent(mediaType(movie)) + '&namespace=' + encodeURIComponent(namespace(movie));
@@ -929,7 +921,7 @@
                     preferredFilmix.name = 'Filmix';
                     sources.splice(sources.indexOf(preferredFilmix), 1); sources.splice(reserveFilmix ? sources.indexOf(reserveFilmix) : 0, 0, preferredFilmix);
                 }
-                sources.push({id: 'demo', name: 'Демо • Big Buck Bunny'});
+                if (!sources.length) { failed('Нет доступных источников. Проверьте подключения в настройках.'); return; }
                 sourceID = Lampa.Storage.get(sourceStorageKey, '');
                 if (preferredFilmix && backend('cinema').base === CINEMA_SERVER && !Lampa.Storage.get('mycinema_filmix_selection_087', false)) {
                     if (sourceID === 'cinema-filmix') { sourceID = preferredFilmix.id; Lampa.Storage.set(sourceStorageKey, sourceID); }
@@ -940,9 +932,9 @@
             }
             function failed(error) {
                 if (!alive || ticket !== generation) return;
-                sources = [{id: 'demo', name: 'Демо • Big Buck Bunny'}]; sourceID = 'demo';
+                sources = []; sourceID = ''; currentBackend = null;
                 items = []; draw();
-                message(error + ' Для проверки плеера выберите «Демо» в меню «Источник».', discover);
+                message(error, discover);
             }
             var tasks = [], available = [];
             if (mode === 'all' || mode === 'device') {
@@ -1103,7 +1095,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.12', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.13', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
