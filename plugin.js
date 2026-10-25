@@ -503,7 +503,7 @@
             if (resolving) return;
             resolving = true;
             var ticket = generation;
-            Lampa.Noty.show('Получаем свежую ссылку на видео…');
+            // Resolve silently; failures remain visible.
             readOnline(item.url, function (data, url) {
                 if (!alive || ticket !== generation) return;
                 resolving = false;
@@ -519,9 +519,9 @@
             }).sort(function (a, b) { return b.height - a.height || a.index - b.index; }).map(function (entry) { return entry.key; });
         }
         function preferredQuality(item, preference) {
-            var keys = availableQualities(item), target = preference && preference.key || '1080p';
+            var keys = availableQualities(item), target = preference && preference.key || '720p';
             if (keys.indexOf(target) >= 0) return target;
-            var height = qualityHeight(target) || 1080;
+            var height = qualityHeight(target) || 720;
             return keys.filter(function (key) { return qualityHeight(key) <= height; })[0] || keys[keys.length - 1];
         }
         function resolvedItem(data, url, item) {
@@ -611,6 +611,13 @@
             if (data && data.mycinema_session === playbackID && data.mycinema_quality_menu && Lampa.PlayerPanel.quality) Lampa.PlayerPanel.quality(data.mycinema_quality_menu, data.url);
         }
         function playerLoaded() { playerReady(Lampa.Player.playdata()); }
+        function playerLevels() {
+            // HLS discovery can arrive after loadeddata and replace the menu with one rendition.
+            var data = Lampa.Player.playdata();
+            if (data && data.mycinema_session === playbackID && data.mycinema_quality_menu && Object.keys(data.mycinema_quality_menu).length > 1 && Lampa.PlayerPanel.quality) {
+                Lampa.PlayerPanel.quality(data.mycinema_quality_menu, data.url);
+            }
+        }
         function nativeAudio(event) {
             var data = Lampa.Player.playdata();
             if (data && data.mycinema_session === playbackID) data.mycinema_native_tracks = event && event.tracks;
@@ -621,6 +628,7 @@
         Lampa.Player.listener.follow('ready', playerReady);
         Lampa.PlayerVideo.listener.follow('tracks', nativeAudio);
         Lampa.PlayerVideo.listener.follow('loadeddata', playerLoaded);
+        Lampa.PlayerVideo.listener.follow('levels', playerLevels);
         function attachQuality(data, item, context, session, inner) {
             if (!inner) return;
             var keys = availableQualities(item), menu = Object.create(null);
@@ -719,7 +727,7 @@
         }
         function play(item, change) {
             var player = Lampa.Storage.field('player'), inner = !player || player === 'inner' || player === 'lampa';
-            var context = change ? change.context : {connection: currentBackend, listURL: currentOnlineURL, rows: items.slice(), voices: voices.slice(), voice: activeVoice(), quality: {key: '1080p'}};
+            var context = change ? change.context : {connection: currentBackend, listURL: currentOnlineURL, rows: items.slice(), voices: voices.slice(), voice: activeVoice(), quality: {key: '720p'}};
             var data = playbackData(item, context.quality);
             if (!httpURL(data.url)) { Lampa.Noty.show('Источник не вернул прямую ссылку на видео.'); return; }
             var session = ++playbackSequence;
@@ -1111,7 +1119,7 @@
         };
         this.render = function () { return files.render(); };
         this.pause = this.stop = function () {};
-        this.destroy = function () { alive = false; generation++; playbackID = 0; playerClosed(); Lampa.Player.listener.remove('destroy', playerClosed); Lampa.Player.listener.remove('start', playerStart); Lampa.Player.listener.remove('ready', playerReady); Lampa.PlayerVideo.listener.remove('tracks', nativeAudio); Lampa.PlayerVideo.listener.remove('loadeddata', playerLoaded); network.clear(); playbackNetwork.clear(); metadataNetwork.clear(); filter.destroy(); scroll.destroy(); files.destroy(); };
+        this.destroy = function () { alive = false; generation++; playbackID = 0; playerClosed(); Lampa.Player.listener.remove('destroy', playerClosed); Lampa.Player.listener.remove('start', playerStart); Lampa.Player.listener.remove('ready', playerReady); Lampa.PlayerVideo.listener.remove('tracks', nativeAudio); Lampa.PlayerVideo.listener.remove('loadeddata', playerLoaded); Lampa.PlayerVideo.listener.remove('levels', playerLevels); network.clear(); playbackNetwork.clear(); metadataNetwork.clear(); filter.destroy(); scroll.destroy(); files.destroy(); };
     }
 
     function onFull(event) {
@@ -1155,7 +1163,7 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.7', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.8', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
