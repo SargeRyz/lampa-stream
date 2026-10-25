@@ -301,7 +301,7 @@
         var seasonChoices = [], selectedSeason = '', queryOverride = object.clarification ? object.search || '' : '';
         var metadata = {}, metadataPending = {}, globalSearch = false, historyRow = null, autoSeasonOpened = false;
         var voiceRestoreAttempts = 0;
-        var compactUI = Lampa.Storage.get('mycinema_compact_ui', true), viewButton, seasonButton, voiceButton, resetButton;
+        var compactUI = Lampa.Storage.get('mycinema_compact_ui', true), viewButton, seasonButton, voiceButton;
 
         function choiceKey() { return sourceID + '|' + movieKey(movie); }
         function choices() { return Lampa.Storage.cache('mycinema_choices', 300, {}); }
@@ -821,11 +821,13 @@
             filter.render().find('.filter--sort span').text('Источник');
             filter.render().find('.filter--search').toggleClass('hide', !currentBackend);
             filter.chosen('sort', selected ? [escapeText(selected.name)] : []);
-            filter.set('sort', sources.map(function (s) { return {title: escapeText(s.name), source: s.id, selected: s.id === sourceID}; }));
+            filter.render().find('.filter--sort > div').text(selected ? selected.name : '');
+            filter.render().find('.filter--sort').attr('title', selected ? selected.name : 'Источник');
+            filter.set('sort', sources.map(function (s) { return {title: escapeText(s.name), source: s.id, selected: s.id === sourceID}; }).concat([{title: 'Обновить список', refresh: true}]));
         }
         function applyView() {
             files.render().toggleClass('mycinema-compact', !!compactUI);
-            if (viewButton) viewButton.text(compactUI ? 'Вид: компактный' : 'Вид: обычный');
+            if (viewButton) viewButton.text('Вид').attr('title', compactUI ? 'Компактный вид. Нажмите для обычного.' : 'Обычный вид. Нажмите для компактного.');
         }
         function updateQuickChoices(options) {
             [[seasonButton, 'season', 'Сезон', 'Все сезоны'], [voiceButton, 'voice', 'Озвучка', 'Выбрать']].forEach(function (entry) {
@@ -843,7 +845,7 @@
                         onSelect: function (choice) { Lampa.Select.close(); filter.onSelect('filter', option, choice); }});
                 });
             });
-            if (resetButton) resetButton.toggleClass('hide', options.length < 2);
+            scroll.minus(files.render().find('.explorer__files-head'));
         }
         function draw(quiet) {
             scroll.clear(); scroll.reset(); last = null;
@@ -865,7 +867,7 @@
             updateQuickChoices(options);
             filter.chosen('filter', [selectedSeason || season ? 'Сезон: ' + escapeText(selectedSeason || season) : '', escapeText(activeVoice())].filter(Boolean));
             if (currentBackend && currentBackend.kind === 'rutube') scroll.append($('<div class="mycinema-message"></div>').text('Фильмы Rutube: название совпадает, год отличается не более чем на один. Проверьте год и продолжительность перед просмотром. Качество — Авто.'));
-            if (discoveryErrors.length) scroll.append($('<div class="mycinema-message"></div>').text('Недоступные подключения: ' + discoveryErrors.join(' • ') + '. Нажмите «Обновить» для повторной проверки.'));
+            if (discoveryErrors.length) scroll.append($('<div class="mycinema-message"></div>').text('Недоступные подключения: ' + discoveryErrors.join(' • ') + '. Для повторной проверки выберите «Обновить список» в меню «Источник».'));
             if (onlineStack.length) scroll.append($('<div class="simple-button selector">Назад к выбору</div>').on('hover:enter', back));
             historyRow = $('<div class="mycinema-history"><div class="mycinema-history-icon">' + ICON + '</div><div class="mycinema-history-text"></div><div class="mycinema-history-time"></div></div>');
             historyRow.on('hover:focus', function () { last = historyRow[0]; scroll.update(historyRow, true); });
@@ -1025,7 +1027,8 @@
         this.create = function () {
             files.render().addClass('mycinema-screen');
             applyView();
-            files.appendHead(filter.render()); files.appendFiles(scroll.render());
+            files.appendHead(filter.render().addClass('mycinema-toolbar')); files.appendFiles(scroll.render());
+            filter.render().on('hover:focus', '.selector', function () { scroll.minus(files.render().find('.explorer__files-head')); });
             scroll.minus(files.render().find('.explorer__files-head'));
             filter.render().find('.filter--search').insertAfter(filter.render().find('.filter--filter'));
             filter.onBack = refocus;
@@ -1038,7 +1041,7 @@
                 Lampa.Select.close(); load();
             };
             filter.onSelect = function (type, choice, subchoice) {
-                if (type === 'sort') { Lampa.Select.close(); sourceID = choice.source; Lampa.Storage.set(sourceStorageKey, sourceID); load(); }
+                if (type === 'sort') { Lampa.Select.close(); if (choice.refresh) { discover(); return; } sourceID = choice.source; Lampa.Storage.set(sourceStorageKey, sourceID); load(); }
                 else if (choice.reset) { Lampa.Select.close(); forgetChoice(); load(); }
                 else if (subchoice) {
                     choice.items.forEach(function (entry) { entry.selected = entry === subchoice; });
@@ -1056,16 +1059,12 @@
                 }
             };
             if (filter.addButtonBack) filter.addButtonBack();
-            var refresh = $('<div class="simple-button selector">Обновить</div>').on('hover:enter', discover);
-            filter.render().find('.torrent-filter').append(refresh);
             function choiceButton(label) {
                 return $('<div class="simple-button selector mycinema-quick-choice hide"><span class="mycinema-choice-caption"></span><span class="mycinema-choice-value"></span></div>').find('.mycinema-choice-caption').text(label).end();
             }
-            seasonButton = choiceButton('Сезон'); voiceButton = choiceButton('Озвучка');
+            seasonButton = choiceButton('Сезон').addClass('mycinema-season-choice'); voiceButton = choiceButton('Озвучка');
             var filterButton = filter.render().find('.filter--filter');
             seasonButton.insertBefore(filterButton); voiceButton.insertBefore(filterButton);
-            resetButton = $('<div class="simple-button selector mycinema-quick-reset hide">Сбросить</div>').on('hover:enter', function () { filter.onSelect('filter', {reset: true}); });
-            filter.render().find('.torrent-filter').append(resetButton);
             viewButton = $('<div class="simple-button selector mycinema-view-toggle"></div>').on('hover:enter', function () {
                 compactUI = !compactUI; Lampa.Storage.set('mycinema_compact_ui', compactUI); applyView();
                 scroll.minus(files.render().find('.explorer__files-head'));
@@ -1133,13 +1132,13 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.14', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.15', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
         $('<style>' +
             '.mycinema-screen .explorer__files{background:rgba(0,0,0,.2)}' +
-            '.mycinema-screen .filter--search>div{max-width:15em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+            '.mycinema-screen .filter--search>div{display:none}' +
             '.mycinema-row{display:flex;align-items:center;position:relative;margin:.65em 0 1.25em;padding:.3em;border:.15em solid transparent;border-radius:.2em;min-height:7.7em}' +
             '.mycinema-row.focus{border-color:#fff;background:rgba(255,255,255,.07)}' +
             '.mycinema-thumb{position:relative;width:12em;height:7.4em;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:linear-gradient(130deg,#242733,#11131b);border-radius:.2em;overflow:hidden}' +
@@ -1157,7 +1156,7 @@
             ".mycinema-choice-caption{font-size:.65em;opacity:.6;line-height:1.2}" +
             ".mycinema-choice-value{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.25}" +
             ".mycinema-quick-choice.focus .mycinema-choice-value{white-space:normal;overflow-wrap:break-word}" +
-            ".mycinema-screen:not(.mycinema-compact) .mycinema-quick-choice,.mycinema-screen:not(.mycinema-compact) .mycinema-quick-reset{display:none}" +
+            ".mycinema-screen:not(.mycinema-compact) .mycinema-quick-choice{display:none}" +
             ".mycinema-compact .filter--filter{display:none}" +
             ".mycinema-compact .mycinema-row{min-height:4.9em;margin:.35em 0 .65em;padding:.4em .5em;border-radius:.45em;background:rgba(255,255,255,.035)}" +
             ".mycinema-compact .mycinema-row.focus{background:rgba(255,255,255,.12);border-color:#fff}" +
@@ -1173,6 +1172,21 @@
             ".mycinema-compact .mycinema-quality{font-size:.75em;opacity:1;margin-top:.4em;line-height:1.4;color:#c9d7eb}" +
             ".mycinema-compact .mycinema-progress{margin-top:.4em}" +
             "@media(max-width:580px){.mycinema-compact .mycinema-thumb{width:5em;height:3.4em}.mycinema-compact .mycinema-row{min-height:4em}.mycinema-compact .mycinema-title{font-size:1.05em}.mycinema-compact .mycinema-meta{max-width:6em}.mycinema-quick-choice{max-width:11em}}" +
+            ".mycinema-screen .mycinema-toolbar{width:100%;min-width:0}" +
+            ".mycinema-toolbar .scroll__content,.mycinema-toolbar .scroll__body{width:100%;min-width:0}" +
+            ".mycinema-toolbar .scroll__body{transform:none!important}" +
+            ".mycinema-screen .torrent-filter{width:100%;display:flex;flex-wrap:wrap;align-items:stretch;white-space:normal}" +
+            ".mycinema-screen .torrent-filter>.simple-button{box-sizing:border-box;min-width:0;max-width:100%;height:auto;min-height:2.8em;margin:0 .4em .4em 0;padding:.4em .65em;flex-shrink:0}" +
+            ".mycinema-screen .torrent-filter>.filter--sort{flex:1 1 8em;max-width:14em;min-width:6em}" +
+            ".mycinema-compact .torrent-filter>.filter--sort{flex-direction:column;align-items:flex-start;justify-content:center}" +
+            ".mycinema-compact .filter--sort>span{font-size:.65em;opacity:.6;margin:0}" +
+            ".mycinema-compact .filter--sort>div{margin:0;padding:0;background:transparent;font-size:1em;max-width:100%}" +
+            ".mycinema-screen .torrent-filter>.mycinema-quick-choice{align-items:flex-start;flex:1 1 9em;max-width:16em}" +
+            ".mycinema-screen .torrent-filter>.mycinema-season-choice{flex:0 1 5em;max-width:6em}" +
+            ".mycinema-screen .torrent-filter>.filter--search{flex:0 0 2.8em;justify-content:center;padding:.4em}" +
+            ".mycinema-screen .torrent-filter>.mycinema-view-toggle{flex:0 0 auto;white-space:nowrap}" +
+            ".mycinema-screen .torrent-filter>.filter--filter{flex:1 1 8em}" +
+            ".mycinema-screen .filter--sort.focus>div{white-space:normal;overflow-wrap:break-word}" +
             '</style>').appendTo('head');
     }
     if (window.appready) init();
