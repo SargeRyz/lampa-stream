@@ -406,7 +406,7 @@
         var sourceStorageKey = 'mycinema_source_' + mode;
         var currentBackend = null, catalogSourceID = '', discoveryErrors = [];
         var externalIDsTried = {};
-        var currentOnlineURL = '', onlineStack = [], voices = [], resolving = false;
+        var currentOnlineURL = '', currentOnlineType = '', onlineStack = [], voices = [], resolving = false;
         var seasonChoices = [], selectedSeason = '', queryOverride = object.clarification ? object.search || '' : '';
         var metadata = {}, metadataPending = {}, globalSearch = false, historyRow = null, autoSeasonOpened = false;
         var voiceRestoreAttempts = 0;
@@ -557,6 +557,7 @@
             resolving = false; network.clear(); items = []; season = '';
             if (push && currentOnlineURL) onlineStack.push(currentOnlineURL);
             currentOnlineURL = url;
+            currentOnlineType = '';
             message('Загружаем видео из источника…');
             readOnline(url, function (data, resolvedURL) {
                 if (!alive || ticket !== generation) return;
@@ -564,6 +565,7 @@
                 if (['movie', 'episode', 'season', 'similar'].indexOf(data.type) < 0 || !Array.isArray(data.data)) {
                     message('Формат ответа не поддерживается. Нужен Lampac с JSON API rjson=true.', function () { loadOnline(url, false); }); return;
                 }
+                currentOnlineType = data.type;
                 if (Array.isArray(data.voice)) voices = data.voice.filter(function (voice) { return voice && voice.url; });
                 else if (data.type !== 'episode' && data.type !== 'movie') voices = [];
                 items = data.data.filter(function (raw) { return raw && typeof raw === 'object'; }).map(function (raw) { return onlineItem(raw, data.type, resolvedURL); });
@@ -987,7 +989,9 @@
             var visible = items.filter(function (item) { return !season || String(item.season) === season; });
             if (currentBackend && currentBackend.kind === 'rutube' && !visible.some(function (item) { return !item.browse; })) {
                 scroll.append($('<div class="mycinema-message"></div>').text('В этой выдаче Rutube фильм с подходящими названием и годом не найден. Можно проверить следующую страницу или другой источник.'));
-            } else if (!visible.length) scroll.append($('<div class="mycinema-message"></div>').text('Для этой карточки видео не найдено. Выберите другой источник или добавьте фильм в каталог сервера.'));
+            } else if (!visible.length) scroll.append($('<div class="mycinema-message"></div>').text(currentBackend && currentBackend.kind === 'veoveo' ?
+                (currentOnlineType === 'similar' ? 'VeoVeo · ТЕСТ: фильм не найден в индексе этого источника. Уточните название или выберите другой источник.' : 'VeoVeo · ТЕСТ: источник не вернул доступных видео для выбранного фильма или сезона. Выберите другой источник.') :
+                'Для этой карточки видео не найдено. Выберите другой источник или добавьте фильм в каталог сервера.'));
             visible.forEach(function (item) {
                 var row = $('<div class="mycinema-row selector"><div class="mycinema-thumb"><div class="mycinema-number"></div></div><div class="mycinema-body"><div class="mycinema-title"></div><div class="mycinema-info"></div><div class="mycinema-progress"></div></div><div class="mycinema-meta"><div class="mycinema-duration"></div><div class="mycinema-quality"></div></div></div>');
                 row.data('mycinema-item', item);
@@ -1251,7 +1255,7 @@
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_veoveo', type: 'select', values: {yes: 'Да', no: 'Нет'}, default: 'yes'},
             field: {name: 'VeoVeo · ТЕСТ', description: 'Добавлять гостевой источник без входа во все подключения. Для проверки можно выбрать отдельный режим VeoVeo · ТЕСТ.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.18', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.19', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
