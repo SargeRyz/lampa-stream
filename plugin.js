@@ -1,5 +1,29 @@
 (function () {
     'use strict';
+    // The short URL is only for installation; subsequent starts use the JS host.
+    // Run before the duplicate-load guard so an existing cached copy can migrate too.
+    function migrateInstallation() {
+        var app = window.Lampa, direct = 'https://sargeryz.github.io/lampa-stream/plugin.js';
+        if (!app || !app.Plugins || !app.Plugins.get || !app.Plugins.save || !app.Plugins.remove) return;
+        try {
+            var installed = app.Plugins.get(), owned = [], aliases = [];
+            installed.forEach(function (entry) {
+                if (!entry || typeof entry.url !== 'string') return;
+                var short = false;
+                try { var url = new URL(entry.url); short = /^https?:$/.test(url.protocol) && /^(www\.)?is\.gd$/.test(url.hostname) && url.pathname === '/ryzmc'; } catch (error) {}
+                if (short) aliases.push(entry);
+                if (short || entry.url === direct) owned.push(entry);
+            });
+            if (!aliases.length) return;
+            var enabled = owned.filter(function (entry) { return Number(entry.status) === 1; });
+            var keep = enabled.filter(function (entry) { return entry.url === direct; })[0] || enabled[0] || owned[0];
+            keep.url = direct;
+            if (!keep.name) keep.name = 'Мой кинотеатр';
+            owned.forEach(function (entry) { if (entry !== keep) app.Plugins.remove(entry); });
+            app.Plugins.save();
+        } catch (error) { if (window.console && console.warn) console.warn('Мой кинотеатр: не удалось сохранить прямой адрес установки.'); }
+    }
+    migrateInstallation();
     if (window.mycinema_loaded) return;
     window.mycinema_loaded = true;
 
@@ -1255,7 +1279,7 @@
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_veoveo', type: 'select', values: {yes: 'Да', no: 'Нет'}, default: 'yes'},
             field: {name: 'VeoVeo · ТЕСТ', description: 'Добавлять гостевой источник без входа во все подключения. Для проверки можно выбрать отдельный режим VeoVeo · ТЕСТ.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.19', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.20', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
