@@ -13,7 +13,116 @@
     var CINEMA_SERVER = 'http://88.218.62.180:9118';
     // Reserved internal origin. These navigation URLs never reach the network.
     var DEVICE_ORIGIN = 'https://mycinema.invalid';
+    var VEO_API = 'https://api.rstprgapipt.com';
+    var VEO_INDEX = 'https://sargeryz.github.io/lampa-stream/data/veoveo/v1/';
+    var veoParts = {}, veoPartOrder = [];
+    function veoName(value) { return String(value || '').toLowerCase().replace(/ё/g, 'е').replace(/[^a-z0-9а-я]+/g, ''); }
+    function veoPart(key) {
+        var hash = 5381;
+        for (var i = 0; i < key.length; i++) hash = (hash * 33 + key.charCodeAt(i)) >>> 0;
+        return ('0' + (hash % 128).toString(16)).slice(-2);
+    }
+    function veoVideoURL(value) {
+        if (!httpURL(value)) return false;
+        try { var url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password && /\.(m3u8|mp4|json)(?:$|\/)/i.test(url.pathname); }
+        catch (error) { return false; }
+    }
+    function veoRead(network, url, done, failed) {
+        network.timeout(20000);
+        network.native(url, function (data) {
+            if (typeof data === 'string') { try { data = JSON.parse(data); } catch (error) { failed('VeoVeo · ТЕСТ: неверный JSON.'); return; } }
+            if (!data || typeof data !== 'object') { failed('VeoVeo · ТЕСТ: пустой ответ.'); return; }
+            try { done(data); } catch (error) { failed('VeoVeo · ТЕСТ: неподдерживаемый ответ источника.'); }
+        }, function (error) {
+            var status = Number(error && error.status);
+            failed('VeoVeo · ТЕСТ: ' + (status === 404 && url.indexOf(VEO_INDEX) === 0 ? 'индекс не опубликован. Обновите расширение вместе с папкой data/veoveo.' : status === 429 ? 'слишком много запросов. Повторите позже.' : status ? 'HTTP ' + status + '.' : 'нет ответа. Проверьте сеть и доступ к источнику.'));
+        }, false, {dataType: 'json', timeout: 20000});
+    }
+    function deviceVeoVeo(params, network, done, failed) {
+        function link(query) {
+            var url = new URL('/veoveo', DEVICE_ORIGIN);
+            ['title', 'original_title', 'year', 'serial', 'kinopoisk_id', 'imdb_id'].forEach(function (key) { if (params[key]) url.searchParams.set(key, params[key]); });
+            Object.keys(query).forEach(function (key) { url.searchParams.set(key, query[key]); });
+            return url.href;
+        }
+        function validID(value) { return /^[1-9]\d{0,14}$/.test(String(value || '')); }
+        function variants(episode) {
+            var result = [], byTitle = {};
+            (Array.isArray(episode.episodeVariants) ? episode.episodeVariants : []).forEach(function (variant) {
+                if (!variant || !validID(variant.id) || !veoVideoURL(variant.filepath)) return;
+                var key = 'v:' + String(variant.title || 'Видео');
+                var score = /\.m3u8(?:$|[?\/])/i.test(variant.filepath) ? 3 : /\.json(?:$|[?\/])/i.test(variant.filepath) ? 2 : 1;
+                if (!byTitle[key]) { byTitle[key] = {index: result.length, score: score}; result.push(variant); }
+                else if (score > byTitle[key].score) { result[byTitle[key].index] = variant; byTitle[key].score = score; }
+            });
+            return result;
+        }
+        function row(episode, variant, tv) {
+            var query = {item: params.item, ep: episode.id, variant: variant.id};
+            var result = {id: episode.id + ':' + variant.id, translate: variant.title || 'Видео', method: 'call', url: '', duration: variant.duration,
+                img: httpURL(variant.previewImageFilepath) ? variant.previewImageFilepath : '', maxquality: /\.mp4(?:$|[?\/])/i.test(variant.filepath) ? '' : 'Авто'};
+            if (tv) { result.s = Number(episode.season.order); result.e = Number(episode.order); result.name = episode.title || 'Серия ' + result.e; query.s = result.s; query.e = result.e; }
+            result.url = link(query); return result;
+        }
+        if (params.item) {
+            if (!validID(params.item) || (params.ep && (!validID(params.ep) || !validID(params.variant)))) { failed('VeoVeo · ТЕСТ: неверный идентификатор.'); return; }
+            veoRead(network, VEO_API + '/balancer-api/proxy/playlists/catalog-api/episodes?content-id=' + encodeURIComponent(params.item), function (data) {
+                if (!Array.isArray(data)) { failed('VeoVeo · ТЕСТ: неверный список эпизодов.'); return; }
+                var episodes = data.filter(function (episode) { return episode && validID(episode.id) && episode.season && Number(episode.season.order) >= 0 && Number(episode.season.order) % 1 === 0; });
+                if (params.ep) {
+                    var episode = episodes.filter(function (entry) { return String(entry.id) === String(params.ep) && (params.s == null || String(entry.season.order) === String(params.s)) && (params.e == null || String(entry.order) === String(params.e)); })[0];
+                    var variant = episode && (Array.isArray(episode.episodeVariants) ? episode.episodeVariants : []).filter(function (entry) { return entry && String(entry.id) === String(params.variant) && veoVideoURL(entry.filepath); })[0];
+                    if (!variant) { failed('VeoVeo · ТЕСТ: выбранное видео больше не доступно.'); return; }
+                    if (/\.json(?:$|[?\/])/i.test(variant.filepath)) {
+                        veoRead(network, variant.filepath, function (parsed) {
+                            var source = (Array.isArray(parsed.sources) ? parsed.sources : []).filter(function (entry) { return entry && veoVideoURL(entry.link) && !/\.json(?:$|[?\/])/i.test(entry.link); })[0];
+                            if (!source) { failed('VeoVeo · ТЕСТ: ссылка на видео не найдена.'); return; }
+                            done({url: source.link});
+                        }, failed);
+                    } else done({url: variant.filepath});
+                    return;
+                }
+                var seasons = [];
+                episodes.forEach(function (episode) { var season = Number(episode.season.order); if (season > 0 && seasons.indexOf(season) < 0) seasons.push(season); });
+                seasons.sort(function (a, b) { return a - b; });
+                if (seasons.length && params.s == null) { done({type: 'season', data: seasons.map(function (season) { return {id: season, name: 'Сезон ' + season, method: 'link', url: link({item: params.item, s: season})}; })}); return; }
+                var rows = [];
+                episodes.filter(function (episode) { return seasons.length ? Number(episode.season.order) === Number(params.s) && Number(episode.order) > 0 : Number(episode.season.order) === 0; }).sort(function (a, b) { return Number(a.order) - Number(b.order); }).forEach(function (episode) {
+                    variants(episode).forEach(function (variant) { rows.push(row(episode, variant, seasons.length > 0)); });
+                });
+                done({type: seasons.length ? 'episode' : 'movie', data: rows});
+            }, failed); return;
+        }
+        var keys = [], attempts = 0, maxResults = 100;
+        function add(key) { if (key && keys.indexOf(key) < 0) keys.push(key); }
+        if (params.clarification !== '1' && validID(params.kinopoisk_id)) add('k:' + params.kinopoisk_id);
+        if (params.clarification !== '1' && /^tt\d+$/i.test(params.imdb_id || '')) add('i:' + params.imdb_id.toLowerCase());
+        if (params.clarification !== '1' && veoName(params.original_title)) add('t:' + veoName(params.original_title));
+        if (veoName(params.title)) add('t:' + veoName(params.title));
+        function search() {
+            if (!keys.length || attempts++ >= 4) { done({type: 'similar', data: []}); return; }
+            var key = keys.shift(), part = veoPart(key);
+            function found(index) {
+                var matches = (Array.isArray(index.keys[key]) ? index.keys[key] : []).filter(function (record) { return Array.isArray(record) && validID(record[0]) && typeof record[1] === 'string'; });
+                if (!matches.length) { search(); return; }
+                if (key.indexOf('t:') === 0 && Number(params.year) > 0) {
+                    var near = matches.filter(function (record) { return Math.abs(Number(record[3]) - Number(params.year)) <= 1; });
+                    if (near.length) matches = near;
+                }
+                done({type: 'similar', data: matches.slice(0, maxResults).map(function (record) { return {id: record[0], name: record[1], year: record[3], info: record[2], method: 'link', url: link({item: record[0]})}; })});
+            }
+            if (veoParts[part]) { found(veoParts[part]); return; }
+            veoRead(network, VEO_INDEX + part + '.json', function (index) {
+                if (index.v !== 1 || !index.keys || typeof index.keys !== 'object' || Array.isArray(index.keys)) { failed('VeoVeo · ТЕСТ: неверный индекс фильмов.'); return; }
+                veoParts[part] = index; veoPartOrder.push(part);
+                if (veoPartOrder.length > 6) delete veoParts[veoPartOrder.shift()];
+                found(index);
+            }, failed);
+        }
+        search();
+    }
     function backend(kind) {
+        if (kind === 'veoveo') return {kind: kind, base: DEVICE_ORIGIN, token: ''};
         if (kind === 'cinema') return {kind: kind, base: String(Lampa.Storage.field('mycinema_cinema_url') || CINEMA_SERVER).trim().replace(/\/+$/, ''), token: ''};
         if (kind === 'rutube') return {kind: kind, base: DEVICE_ORIGIN, token: ''};
         if (kind === 'device') return {kind: kind, base: DEVICE_ORIGIN, token: '',
@@ -406,11 +515,12 @@
                 url = onlineURL(url, null, connection);
                 if (jsonMode) { var parsed = new URL(url); parsed.searchParams.set('rjson', 'true'); url = parsed.href; }
             } catch (error) { failed(error.message); return; }
-            if (connection.kind === 'device' || connection.kind === 'rutube') {
+            if (connection.kind === 'device' || connection.kind === 'rutube' || connection.kind === 'veoveo') {
                 var internal = new URL(url), params = {};
-                var route = connection.kind === 'rutube' ? '/rutube' : '/filmix';
+                var route = connection.kind === 'veoveo' ? '/veoveo' : connection.kind === 'rutube' ? '/rutube' : '/filmix';
                 if (internal.origin !== DEVICE_ORIGIN || internal.pathname !== route) { failed('Некорректный переход клиентского адаптера.'); return; }
                 internal.searchParams.forEach(function (value, key) { params[key] = value; });
+                if (connection.kind === 'veoveo') { deviceVeoVeo(params, transport, function (data) { done(data, url); }, failed); return; }
                 if (connection.kind === 'rutube') { deviceRutube(params, transport, function (data) { done(data, url); }, failed); return; }
                 deviceFilmix(params, connection, transport, function (data) { done(data, url); }, failed); return;
             }
@@ -867,6 +977,7 @@
             updateQuickChoices(options);
             filter.chosen('filter', [selectedSeason || season ? 'Сезон: ' + escapeText(selectedSeason || season) : '', escapeText(activeVoice())].filter(Boolean));
             if (currentBackend && currentBackend.kind === 'rutube') scroll.append($('<div class="mycinema-message"></div>').text('Фильмы Rutube: название совпадает, год отличается не более чем на один. Проверьте год и продолжительность перед просмотром. Качество — Авто.'));
+            if (currentBackend && currentBackend.kind === 'veoveo') scroll.append($('<div class="mycinema-message"></div>').text('VeoVeo · ТЕСТ. Аудиодорожки и качество — в меню плеера, если доступны.'));
             if (discoveryErrors.length) scroll.append($('<div class="mycinema-message"></div>').text('Недоступные подключения: ' + discoveryErrors.join(' • ') + '. Для повторной проверки выберите «Обновить список» в меню «Источник».'));
             if (onlineStack.length) scroll.append($('<div class="simple-button selector">Назад к выбору</div>').on('hover:enter', back));
             historyRow = $('<div class="mycinema-history"><div class="mycinema-history-icon">' + ICON + '</div><div class="mycinema-history-text"></div><div class="mycinema-history-time"></div></div>');
@@ -968,6 +1079,7 @@
                 if (backend('device').host) tasks.push('device');
                 if (Lampa.Storage.field('mycinema_rutube') !== 'no' && mediaType(movie) !== 'tv') tasks.push('rutube');
                 if (mode === 'all') {
+                    if (Lampa.Storage.field('mycinema_veoveo') !== 'no') tasks.push('veoveo');
                     if (httpURL(backend('direct').base)) tasks.push('direct', 'catalog');
                     if (httpURL(backend('lampac').base)) tasks.push('lampac');
                     if (Lampa.Storage.field('mycinema_public') === 'yes') tasks.push('public');
@@ -982,6 +1094,11 @@
                 var kind = tasks.shift(), connection = backend(kind);
                 var label = {cinema: 'Cinema', device: 'На устройстве', direct: 'Свой адаптер', lampac: 'Свой Lampac', public: 'WTCH', catalog: 'Каталог'}[kind] || kind;
                 function error(text) { if (!alive || ticket !== generation) return; discoveryErrors.push(label + ': ' + text); next(); }
+                if (kind === 'veoveo') {
+                    available.push({id: 'device-veoveo', name: 'VeoVeo · ТЕСТ', connection: connection,
+                        url: onlineURL(DEVICE_ORIGIN + '/veoveo', onlineParams(movie), connection)});
+                    next(); return;
+                }
                 if (kind === 'rutube') {
                     available.push({id: 'device-rutube', name: 'Rutube • На устройстве', connection: connection,
                         url: onlineURL(DEVICE_ORIGIN + '/rutube', onlineParams(movie), connection)});
@@ -1112,7 +1229,7 @@
         Lampa.SettingsApi.addComponent({component: ID, name: NAME, icon: ICON});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_server', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Адрес личного API', description: 'Необязательный сервер пользователя для адаптеров и каталога. Например https://cinema.example.org.'}});
-        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_mode', type: 'select', values: {all: 'Все подключения', cinema: 'Источники Cinema', device: 'Напрямую с устройства', rutube: 'Rutube на устройстве', direct: 'Адаптеры личного API', public: 'Готовый сервер WTCH', lampac: 'Свой Lampac', catalog: 'Свой каталог'}, default: 'all'},
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_mode', type: 'select', values: {all: 'Все подключения', cinema: 'Источники Cinema', device: 'Напрямую с устройства', rutube: 'Rutube на устройстве', veoveo: 'VeoVeo · ТЕСТ', direct: 'Адаптеры личного API', public: 'Готовый сервер WTCH', lampac: 'Свой Lampac', catalog: 'Свой каталог'}, default: 'all'},
             field: {name: 'Режим', description: 'После смены режима откройте источник заново.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_cinema', type: 'select', values: {yes: 'Да', no: 'Нет'}, default: 'yes'},
             field: {name: 'Cinema во всех подключениях', description: 'Добавлять источники стороннего сервера Cinema. Можно отключить независимо от остальных подключений.'}});
@@ -1132,7 +1249,9 @@
             field: {name: 'Адрес Lampac', description: 'Ваш сервер, например https://lampac.example.org — без /online.js. Провайдеры загружаются из его API.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_access', type: 'input', values: '', placeholder: 'Не задано', default: ''},
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.16', component: ID,
+        Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_veoveo', type: 'select', values: {yes: 'Да', no: 'Нет'}, default: 'yes'},
+            field: {name: 'VeoVeo · ТЕСТ', description: 'Добавлять гостевой источник без входа во все подключения. Для проверки можно выбрать отдельный режим VeoVeo · ТЕСТ.'}});
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.18', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
