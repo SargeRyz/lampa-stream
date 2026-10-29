@@ -1025,6 +1025,7 @@
                 row.on('hover:focus', function () { last = row[0]; scroll.update(row, true); });
                 row.on('hover:enter', function () { enter(item); });
                 scroll.append(row);
+                if (!last) last = row[0];
             });
             if (!quiet) refocus();
         }
@@ -1279,7 +1280,7 @@
             field: {name: 'Токен доступа Lampac', description: 'Если сервер требует авторизацию. Это токен вашего Lampac, а не Filmix или Kodik.'}});
         Lampa.SettingsApi.addParam({component: ID, param: {name: 'mycinema_veoveo', type: 'select', values: {yes: 'Да', no: 'Нет'}, default: 'yes'},
             field: {name: 'VeoVeo · ТЕСТ', description: 'Добавлять гостевой источник без входа во все подключения. Для проверки можно выбрать отдельный режим VeoVeo · ТЕСТ.'}});
-        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.20', component: ID,
+        Lampa.Manifest.plugins = {type: 'video', name: NAME, version: '0.8.21', component: ID,
             description: 'Каталог видео, выбор озвучки и качества',
             onContextMenu: function () { return {name: NAME, title: NAME}; }, onContextLauch: open};
         Lampa.Listener.follow('full', onFull);
